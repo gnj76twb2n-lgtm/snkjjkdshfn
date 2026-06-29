@@ -858,6 +858,15 @@ def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_k
                 week_naar_sheet[week] = (nieuw, regels_week)
 
             if week_naar_sheet:
+                # Harde veiligheidscheck, niet alleen vertrouwen op de logica
+                # hierboven: weiger de delete als er toch geen ander
+                # tabblad blijkt te bestaan (een workbook moet altijd
+                # minstens 1 zichtbaar tabblad hebben).
+                if wb.Sheets.Count <= 1:
+                    raise RuntimeError(
+                        "Veiligheidscheck gefaald: pristine zou het enige tabblad "
+                        "zijn na verwijderen. Delete wordt NIET uitgevoerd."
+                    )
                 pristine.Delete()
             else:
                 print(
