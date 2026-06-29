@@ -114,6 +114,7 @@ XL_SOLID = 1
 MSO_AUTOMATION_FORCE_DISABLE = 3
 XL_CALCULATION_AUTOMATIC = -4105
 XL_TYPE_PDF = 0
+XL_OPENXML_WORKBOOK = 51   # normale .xlsx, geen macro's (52 zou macro-enabled zijn)
 XL_QUALITY_STANDARD = 0
 
 
@@ -155,6 +156,10 @@ def clean_ean(value) -> str:
 
 
 def clean_number(value):
+    """Punt = decimaalteken (deze CSV is komma-gescheiden, dus een komma kan
+    geen decimaalteken zijn - dat zou de kolomscheiding breken). Een
+    eventuele Engelse duizendtal-komma die via quoting de CSV-scheiding
+    overleefde (bv. '3,000.50') wordt als fallback ook opgevangen."""
     if pd.isna(value):
         return None
     if isinstance(value, (int, float)):
@@ -163,12 +168,12 @@ def clean_number(value):
     if value == "" or value.lower() in ("nan", "none", "-"):
         return None
     value = value.replace("\u20ac", "").replace(" ", "").replace("\u00a0", "")
-    if "." in value and "," in value:
-        value = value.replace(".", "").replace(",", ".")
-    else:
-        value = value.replace(",", ".")
     try:
         return float(value)
+    except ValueError:
+        pass
+    try:
+        return float(value.replace(",", ""))   # mogelijke duizendtal-komma wegstrippen
     except ValueError:
         return None
 
@@ -184,31 +189,8 @@ def clean_week(value):
 
 
 def clean_volume_number(value):
-    if pd.isna(value):
-        return None
-    value = str(value).strip()
-    if value == "" or value.lower() in ("nan", "none", "-"):
-        return None
-    value = value.replace(" ", "").replace("\u00a0", "")
-
-    if "." in value and "," not in value:
-        delen = value.split(".")
-        if len(delen) == 2 and len(delen[1]) == 3 and delen[0].isdigit() and delen[1].isdigit():
-            return float(delen[0] + delen[1])   # 3.000 -> 3000
-
-    if "," in value and "." not in value:
-        delen = value.split(",")
-        if len(delen) == 2 and len(delen[1]) == 3 and delen[0].isdigit() and delen[1].isdigit():
-            return float(delen[0] + delen[1])   # 3,000 -> 3000
-
-    if "." in value and "," in value:
-        value = value.replace(".", "").replace(",", ".")
-    else:
-        value = value.replace(",", ".")
-    try:
-        return float(value)
-    except ValueError:
-        return None
+    """Zelfde Engelse-notatie-logica als clean_number (punt = decimaalteken)."""
+    return clean_number(value)
 
 
 def volume_to_excel_value(value):
@@ -715,7 +697,9 @@ def vul_week_sheet(sheet, retailer_cfg: dict, weken: list, regels: list) -> int:
     sheet.Range(FROZEN_FOOD_CEL).Value = retailer_cfg["categorie"]
     sheet.Range(TITEL_CEL).Value = retailer_cfg["titel"]
     sheet.Range(ACCOUNTMANAGER_CEL).Value = retailer_cfg["accountmanager"]
-    sheet.Range(DATUM_CEL).Value = dt.date.today().strftime("%d/%m/%Y")
+    datum_cel = sheet.Range(DATUM_CEL)
+    datum_cel.Value = dt.datetime.combine(dt.date.today(), dt.time())   # echt datumobject, locale-onafhankelijk
+    datum_cel.NumberFormat = "dd/mm/yyyy"
     sheet.Range(Q_LABEL_CEL).Value = kwartaal_label(weken)   # cel is al gemerged in de template
 
     gegroepeerd = retailer_cfg.get("gele_mechanisme_headers", False)
@@ -810,13 +794,14 @@ def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_k
     schrijf_controlebestand(alle_regels, OUTPUT_MAP, weergave_naam)
 
     output_basis = output_basisnaam(weergave_naam, weken, jaar)
-    output_pad = OUTPUT_MAP / f"{output_basis}.xlsm"
-    shutil.copy2(template_path, output_pad)   # master blijft altijd schoon
+    output_pad = OUTPUT_MAP / f"{output_basis}.xlsx"            # normale Excel, geen macrobestand
+    tijdelijk_pad = OUTPUT_MAP / f"__tijdelijk_{output_basis}.xlsm"
+    shutil.copy2(template_path, tijdelijk_pad)   # master blijft altijd schoon; dit is een wegwerp-werkkopie
 
     app = open_excel_veilig()
     wb = None
     try:
-        wb = app.Workbooks.Open(str(output_pad.resolve()), UpdateLinks=0)
+        wb = app.Workbooks.Open(str(tijdelijk_pad.resolve()), UpdateLinks=0)
         app.Calculation = XL_CALCULATION_AUTOMATIC
         pristine = vind_template_sheet(wb, cfg["sheet_template"])
 
@@ -829,10 +814,25 @@ def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_k
                 if not regels_week:
                     print(f"Week {week}: geen regels, sheet wordt overgeslagen.")
                     continue
+                namen_voor = {s.Name for s in wb.Sheets}
                 pristine.Copy(After=wb.Sheets(wb.Sheets.Count))
+                namen_na = {s.Name for s in wb.Sheets}
+                nieuwe_namen = namen_na - namen_voor
+                print(f"  Week {week}: tabbladen voor kopie={len(namen_voor)}, na kopie={len(namen_na)}, "
+                      f"nieuwe naam/namen: {nieuwe_namen}")
+
+                if len(nieuwe_namen) != 1:
+                    raise RuntimeError(
+                        f"Verwachtte precies 1 nieuw tabblad na het kopieren voor week {week}, "
+                        f"maar kreeg {len(nieuwe_namen)} ({nieuwe_namen}). Voor: {len(namen_voor)} "
+                        f"tabbladen, na: {len(namen_na)} tabbladen. pristine.Copy() lijkt niet "
+                        f"betrouwbaar een nieuw tabblad aan te maken in deze lus."
+                    )
+
+                tijdelijke_naam = nieuwe_namen.pop()
+                nieuw = wb.Sheets(tijdelijke_naam)
                 naam = f"wk{week} {jaar}"
-                wb.Sheets(wb.Sheets.Count).Name = naam
-                nieuw = wb.Sheets(naam)   # opnieuw ophalen via de unieke naam, niet via index
+                nieuw.Name = naam
                 nieuw.Visible = XL_SHEET_VISIBLE   # expliciet afdwingen, niet aannemen dat de kopie dit overneemt
                 week_naar_sheet[week] = (nieuw, regels_week)
 
@@ -872,7 +872,7 @@ def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_k
 
         app.CalculateFullRebuild()
         wacht_op_excel_berekening(app)
-        wb.Save()
+        wb.SaveAs(Filename=str(output_pad.resolve()), FileFormat=XL_OPENXML_WORKBOOK)
 
         for sheet in gemaakte_sheets:
             pdf_naam = f"{output_basis}_{sheet.Name}.pdf".replace(" ", "_")
@@ -900,6 +900,10 @@ def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_k
         except Exception:
             pass
         del app
+        try:
+            tijdelijk_pad.unlink()   # wegwerp-macrokopie opruimen, nooit het eindresultaat
+        except Exception:
+            pass
 
 
 # ====================================================================
