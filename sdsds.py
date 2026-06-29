@@ -20,9 +20,9 @@ import win32com.client as win32
 BRON_MAP = Path("inzicht")
 OUTPUT_MAP = Path("output")
 
-DIRK_TEMPLATE_BESTAND = "Actievoorstellen.xlsm"   # zelfde bestand voor elke retailer
+DIRK_TEMPLATE_BESTAND = "Actievoorstellen.xlsx"   # gewone Excel, geen macrobestand; zelfde bestand voor elke retailer
 
-# BEVESTIGDE REGEL: alle retailers gebruiken Actievoorstellen.xlsm als
+# BEVESTIGDE REGEL: alle retailers gebruiken Actievoorstellen.xlsx als
 # startbestand. Alleen Poiesz krijgt een apart tabblad per week; elke
 # andere (huidige of toekomstige) retailer gebruikt 1 doorlopend tabblad.
 RETAILERS = {
@@ -794,14 +794,13 @@ def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_k
     schrijf_controlebestand(alle_regels, OUTPUT_MAP, weergave_naam)
 
     output_basis = output_basisnaam(weergave_naam, weken, jaar)
-    output_pad = OUTPUT_MAP / f"{output_basis}.xlsx"            # normale Excel, geen macrobestand
-    tijdelijk_pad = OUTPUT_MAP / f"__tijdelijk_{output_basis}.xlsm"
-    shutil.copy2(template_path, tijdelijk_pad)   # master blijft altijd schoon; dit is een wegwerp-werkkopie
+    output_pad = OUTPUT_MAP / f"{output_basis}.xlsx"
+    shutil.copy2(template_path, output_pad)   # master blijft altijd schoon
 
     app = open_excel_veilig()
     wb = None
     try:
-        wb = app.Workbooks.Open(str(tijdelijk_pad.resolve()), UpdateLinks=0)
+        wb = app.Workbooks.Open(str(output_pad.resolve()), UpdateLinks=0)
         app.Calculation = XL_CALCULATION_AUTOMATIC
         pristine = vind_template_sheet(wb, cfg["sheet_template"])
 
@@ -872,7 +871,7 @@ def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_k
 
         app.CalculateFullRebuild()
         wacht_op_excel_berekening(app)
-        wb.SaveAs(Filename=str(output_pad.resolve()), FileFormat=XL_OPENXML_WORKBOOK)
+        wb.Save()
 
         for sheet in gemaakte_sheets:
             pdf_naam = f"{output_basis}_{sheet.Name}.pdf".replace(" ", "_")
@@ -900,10 +899,6 @@ def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_k
         except Exception:
             pass
         del app
-        try:
-            tijdelijk_pad.unlink()   # wegwerp-macrokopie opruimen, nooit het eindresultaat
-        except Exception:
-            pass
 
 
 # ====================================================================
