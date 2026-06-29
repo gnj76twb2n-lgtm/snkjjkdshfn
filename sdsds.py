@@ -96,6 +96,7 @@ EXCEL_ZICHTBAAR = False
 
 # Excel/COM-constanten (letterlijke waarden, geen gencache/EnsureDispatch nodig)
 XL_PASTE_ALL = -4104
+XL_PASTE_COLUMN_WIDTHS = 8
 XL_SHEET_VISIBLE = -1
 XL_CENTER = -4108
 XL_VCENTER = -4108
@@ -813,26 +814,15 @@ def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_k
                 if not regels_week:
                     print(f"Week {week}: geen regels, sheet wordt overgeslagen.")
                     continue
-                namen_voor = {s.Name for s in wb.Sheets}
-                pristine.Copy(After=wb.Sheets(wb.Sheets.Count))
-                namen_na = {s.Name for s in wb.Sheets}
-                nieuwe_namen = namen_na - namen_voor
-                print(f"  Week {week}: tabbladen voor kopie={len(namen_voor)}, na kopie={len(namen_na)}, "
-                      f"nieuwe naam/namen: {nieuwe_namen}")
+                nieuw = wb.Sheets.Add(After=wb.Sheets(wb.Sheets.Count))
+                pristine.Cells.Copy()
+                nieuw.Cells(1, 1).PasteSpecial(Paste=XL_PASTE_ALL)
+                nieuw.Cells(1, 1).PasteSpecial(Paste=XL_PASTE_COLUMN_WIDTHS)
+                nieuw.Application.CutCopyMode = False
 
-                if len(nieuwe_namen) != 1:
-                    raise RuntimeError(
-                        f"Verwachtte precies 1 nieuw tabblad na het kopieren voor week {week}, "
-                        f"maar kreeg {len(nieuwe_namen)} ({nieuwe_namen}). Voor: {len(namen_voor)} "
-                        f"tabbladen, na: {len(namen_na)} tabbladen. pristine.Copy() lijkt niet "
-                        f"betrouwbaar een nieuw tabblad aan te maken in deze lus."
-                    )
-
-                tijdelijke_naam = nieuwe_namen.pop()
-                nieuw = wb.Sheets(tijdelijke_naam)
                 naam = f"wk{week} {jaar}"
                 nieuw.Name = naam
-                nieuw.Visible = XL_SHEET_VISIBLE   # expliciet afdwingen, niet aannemen dat de kopie dit overneemt
+                nieuw.Visible = XL_SHEET_VISIBLE   # expliciet afdwingen
                 week_naar_sheet[week] = (nieuw, regels_week)
 
             if week_naar_sheet:
