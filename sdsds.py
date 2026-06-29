@@ -30,7 +30,7 @@ RETAILERS = {
         "weergave_naam": "Poiesz",
         "sheet_template": "Promoplan Dirk 2026",
         "titel": "Poiesz aktie-overzicht 2026",
-        "accountmanager": "Laura",
+        "accountmanager": "Laura Schoemaker",
         "categorie": "Frozen Food",
         "meerdere_sheets_per_week": True,
         "gele_mechanisme_headers": True,
@@ -61,11 +61,13 @@ START_OUTPUT_RIJ = 7
 Q4_RIJ = 6
 PRINT_LAATSTE_KOLOM = "R"     # NOOIT automatisch via UsedRange bepalen
 
-TOP_BLUE_RANGE = "A1:R1"
-Q4_MERGE_RANGE = "A6:R6"
+TOP_BLUE_RANGE = "A1:R1"      # niet meer actief gebruikt voor opmaak - staat al goed in de template
+Q4_MERGE_RANGE = "A6:R6"      # niet meer actief gebruikt voor opmaak - staat al goed in de template
 TITEL_CEL = "F1"
 FROZEN_FOOD_CEL = "B1"
 ACCOUNTMANAGER_CEL = "B2"
+DATUM_CEL = "B3"               # AANNAME: zelfde kolom als accountmanager, 1 rij lager - check dit
+Q_LABEL_CEL = "A6"             # top-links van de al-gemergede Q-balk (A6:R6)
 
 KOL_A_DVIP = "A"
 KOL_B_WEEK = "B"
@@ -706,40 +708,15 @@ def _verwijder_overtollige_rijen(sheet, laatste_output_rij: int):
 
 
 def vul_week_sheet(sheet, retailer_cfg: dict, weken: list, regels: list) -> int:
-    sheet.Range(TOP_BLUE_RANGE).Interior.Pattern = XL_SOLID
-    sheet.Range(TOP_BLUE_RANGE).Interior.Color = KLEUR_BLAUW
-    sheet.Range(TOP_BLUE_RANGE).Borders(XL_EDGE_BOTTOM).LineStyle = XL_CONTINUOUS
-    sheet.Range(TOP_BLUE_RANGE).Borders(XL_EDGE_BOTTOM).Weight = XL_THIN
-
+    # Rijen 1 t/m 6: de opmaak (kleur, randen, merge) staat al goed in de
+    # template zelf - elke sheet is een kopie van het echte, correct
+    # opgemaakte origineel. ALLEEN de tekstinhoud aanpassen, niet de opmaak
+    # opnieuw zetten (dat verstoorde eerder iets dat al klopte).
     sheet.Range(FROZEN_FOOD_CEL).Value = retailer_cfg["categorie"]
-    sheet.Range(FROZEN_FOOD_CEL).Font.Bold = True
-    sheet.Range(FROZEN_FOOD_CEL).Font.Color = 16777215
-    sheet.Range(FROZEN_FOOD_CEL).Font.Underline = True
-
     sheet.Range(TITEL_CEL).Value = retailer_cfg["titel"]
-    sheet.Range(TITEL_CEL).Font.Bold = True
-    sheet.Range(TITEL_CEL).Font.Size = 18
-    sheet.Range(TITEL_CEL).HorizontalAlignment = XL_CENTER
-
     sheet.Range(ACCOUNTMANAGER_CEL).Value = retailer_cfg["accountmanager"]
-
-    try:
-        sheet.Range(Q4_MERGE_RANGE).UnMerge()
-    except Exception:
-        pass
-    q_rng = sheet.Range(Q4_MERGE_RANGE)
-    q_rng.Merge()
-    q_rng.Value = kwartaal_label(weken)
-    q_rng.HorizontalAlignment = XL_CENTER
-    q_rng.VerticalAlignment = XL_VCENTER
-    q_rng.Font.Bold = True
-    q_rng.Interior.Pattern = XL_SOLID
-    q_rng.Interior.Color = KLEUR_BLAUW
-    q_rng.Borders(XL_EDGE_TOP).LineStyle = XL_CONTINUOUS
-    q_rng.Borders(XL_EDGE_TOP).Weight = XL_THIN
-    q_rng.Borders(XL_EDGE_BOTTOM).LineStyle = XL_CONTINUOUS
-    q_rng.Borders(XL_EDGE_BOTTOM).Weight = XL_THIN
-    sheet.Rows(Q4_RIJ).RowHeight = 15
+    sheet.Range(DATUM_CEL).Value = dt.date.today().strftime("%d/%m/%Y")
+    sheet.Range(Q_LABEL_CEL).Value = kwartaal_label(weken)   # cel is al gemerged in de template
 
     gegroepeerd = retailer_cfg.get("gele_mechanisme_headers", False)
     template_rij = sheet.Rows(TEMPLATE_FORMULE_RIJ)
@@ -853,9 +830,10 @@ def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_k
                     print(f"Week {week}: geen regels, sheet wordt overgeslagen.")
                     continue
                 pristine.Copy(After=wb.Sheets(wb.Sheets.Count))
-                nieuw = wb.Sheets(wb.Sheets.Count)
+                naam = f"wk{week} {jaar}"
+                wb.Sheets(wb.Sheets.Count).Name = naam
+                nieuw = wb.Sheets(naam)   # opnieuw ophalen via de unieke naam, niet via index
                 nieuw.Visible = XL_SHEET_VISIBLE   # expliciet afdwingen, niet aannemen dat de kopie dit overneemt
-                nieuw.Name = f"wk{week} {jaar}"
                 week_naar_sheet[week] = (nieuw, regels_week)
 
             if week_naar_sheet:
