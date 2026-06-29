@@ -854,18 +854,24 @@ def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_k
                     continue
                 pristine.Copy(After=wb.Sheets(wb.Sheets.Count))
                 nieuw = wb.Sheets(wb.Sheets.Count)
+                nieuw.Visible = XL_SHEET_VISIBLE   # expliciet afdwingen, niet aannemen dat de kopie dit overneemt
                 nieuw.Name = f"wk{week} {jaar}"
                 week_naar_sheet[week] = (nieuw, regels_week)
 
             if week_naar_sheet:
                 # Harde veiligheidscheck, niet alleen vertrouwen op de logica
-                # hierboven: weiger de delete als er toch geen ander
-                # tabblad blijkt te bestaan (een workbook moet altijd
-                # minstens 1 zichtbaar tabblad hebben).
-                if wb.Sheets.Count <= 1:
+                # hierboven: weiger de delete als er toch geen ander ZICHTBAAR
+                # tabblad blijkt te bestaan. Sheets.Count alleen is niet
+                # genoeg - dat telt ook verborgen technische tabbladen mee
+                # (bv. een BExRepositorySheet), terwijl Excel's eigen regel
+                # specifiek over zichtbare tabbladen gaat.
+                andere_zichtbare = sum(
+                    1 for s in wb.Sheets if s.Name != pristine.Name and s.Visible == XL_SHEET_VISIBLE
+                )
+                if andere_zichtbare < 1:
                     raise RuntimeError(
-                        "Veiligheidscheck gefaald: pristine zou het enige tabblad "
-                        "zijn na verwijderen. Delete wordt NIET uitgevoerd."
+                        "Veiligheidscheck gefaald: er is geen ander zichtbaar tabblad "
+                        "naast pristine. Delete wordt NIET uitgevoerd."
                     )
                 pristine.Delete()
             else:
