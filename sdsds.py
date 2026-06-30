@@ -457,6 +457,7 @@ XL_THIN = 2
 XL_MEDIUM = -4138
 XL_SOLID = 1
 XL_SHIFT_DOWN = -4121
+XL_SHIFT_UP = -4162
 
 
 def kwartaal_van_week(week: int) -> int:
@@ -601,23 +602,58 @@ def _zet_zwarte_onderrand(sheet, rij: int):
     rng.Borders(XL_EDGE_BOTTOM).Weight = XL_MEDIUM
 
 
-def _maak_overtollige_rijen_leeg(sheet, laatste_output_rij: int, sjabloon_rij: int):
-    used_range = sheet.UsedRange
-    laatste_gebruikte_rij = used_range.Row + used_range.Rows.Count - 1
-    bovengrens = min(laatste_gebruikte_rij, sjabloon_rij)
-    if bovengrens > laatste_output_rij:
-        bereik = sheet.Range(f"A{laatste_output_rij + 1}:{PRINT_LAATSTE_KOLOM}{bovengrens}")
-        bereik.ClearContents()
-        bereik.Interior.ColorIndex = 2
-        try:
-            bereik.Borders(XL_EDGE_TOP).LineStyle = 0
-            bereik.Borders(XL_EDGE_BOTTOM).LineStyle = 0
-            bereik.Borders(XL_EDGE_LEFT).LineStyle = 0
-            bereik.Borders(XL_EDGE_RIGHT).LineStyle = 0
-            bereik.Borders(XL_INSIDE_HORIZONTAL).LineStyle = 0
-            bereik.Borders(XL_INSIDE_VERTICAL).LineStyle = 0
-        except Exception:
-            pass
+_IGLO_VOETNOOT_PATROON = re.compile(r"\*{1,3}\s*Iglo", re.IGNORECASE)
+
+
+def _rij_tekst(sheet, rij: int) -> str:
+    """Plakt de inhoud van alle cellen op een rij (kolom A t/m
+    PRINT_LAATSTE_KOLOM) aan elkaar, zodat we per rij kunnen checken of er
+    een *Iglo-voetnoottekst in staat (ongeacht in welke kolom precies)."""
+    waarden = sheet.Range(f"A{rij}:{PRINT_LAATSTE_KOLOM}{rij}").Value
+    if waarden is None:
+        return ""
+    cellen = waarden[0] if isinstance(waarden, tuple) else [waarden]
+    return " ".join(str(c) for c in cellen if c not in (None, ""))
+
+
+def _is_iglo_voetnoot(tekst: str) -> bool:
+    return bool(_IGLO_VOETNOOT_PATROON.search(tekst))
+
+
+def _verwijder_overtollige_rijen(sheet, laatste_output_rij: int, sjabloon_rij: int) -> int:
+    """Verwijdert de oude placeholder-rijen tussen het laatst geschreven
+    artikel en de sjabloon-/formulerij ECHT (met Delete, niet alleen
+    leegmaken zoals voorheen). Een rij die een *Iglo / **Iglo / ***Iglo
+    voetnoottekst bevat blijft staan; komt diezelfde voetnoottekst meerdere
+    keren voor, dan blijft alleen de eerste keer staan en wordt de rest
+    verwijderd. Geeft de (na verwijdering opgeschoven) positie van de
+    sjabloonrij terug."""
+    if sjabloon_rij <= laatste_output_rij + 1:
+        return sjabloon_rij
+
+    geziene_voetnoten = set()
+    te_verwijderen = []
+
+    for rij in range(laatste_output_rij + 1, sjabloon_rij):
+        tekst = _rij_tekst(sheet, rij)
+        if _is_iglo_voetnoot(tekst):
+            sleutel = tekst.strip().lower()
+            if sleutel in geziene_voetnoten:
+                te_verwijderen.append(rij)  # duplicaat van een voetnoot -> ook weg
+            else:
+                geziene_voetnoten.add(sleutel)  # eerste keer -> deze rij laten staan
+        else:
+            te_verwijderen.append(rij)
+
+    # Van onder naar boven verwijderen - anders schuiven de rijnummers van
+    # de nog te verwijderen rijen mee op tijdens het verwijderen.
+    for rij in reversed(te_verwijderen):
+        sheet.Rows(rij).Delete(Shift=XL_SHIFT_UP)
+
+    print(f"{len(te_verwijderen)} oude placeholder-rij(en) verwijderd, "
+          f"{len(geziene_voetnoten)} *Iglo-voetnoot(en) behouden.")
+
+    return sjabloon_rij - len(te_verwijderen)
 
 
 def vul_sheet(sheet, retailer_cfg: dict, weken: list, week_groepen: list, tick=None) -> int:
@@ -695,7 +731,11 @@ def vul_sheet(sheet, retailer_cfg: dict, weken: list, week_groepen: list, tick=N
 
     if laatste_rij >= START_OUTPUT_RIJ:
         _zet_zwarte_onderrand(sheet, laatste_rij)
-        _maak_overtollige_rijen_leeg(sheet, laatste_rij, huidige_template_rij)
+        nieuwe_sjabloon_rij = _verwijder_overtollige_rijen(sheet, laatste_rij, huidige_template_rij)
+        # De behouden *Iglo-voetnootregels staan nu direct onder de
+        # laatste artikelregel en horen bij de afdruk - neem ze mee in
+        # laatste_rij zodat het printbereik ze ook bevat.
+        laatste_rij = nieuwe_sjabloon_rij - 1
 
     sheet.PageSetup.PrintArea = f"$A$1:${PRINT_LAATSTE_KOLOM}${laatste_rij}"
     return laatste_rij
