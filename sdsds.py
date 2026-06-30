@@ -624,6 +624,21 @@ def open_excel_veilig():
     return app, excel_pid
 
 
+def is_bestand_vergrendeld(pad: Path) -> bool:
+    """Test direct (los van Excel/COM) of dit pad exclusief vergrendeld is
+    door iets anders - bv. een ander geopend Excel-venster, of OneDrive die
+    actief aan het synchroniseren is. Geeft een concreet, betrouwbaar
+    antwoord, in plaats van te moeten gokken op Excels vage 'Document not
+    saved.'-foutmelding."""
+    try:
+        with open(pad, "r+b"):
+            return False
+    except PermissionError:
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def opslaan_met_retry(wb, output_pad: Path, pogingen: int = 5, wachttijd: float = 2.0):
     """wb.Save() kan transient falen met 'Document not saved' direct na een
     verse shutil.copy2()-kopie - meest waarschijnlijk omdat OneDrive (als de
@@ -639,16 +654,16 @@ def opslaan_met_retry(wb, output_pad: Path, pogingen: int = 5, wachttijd: float 
             return
         except Exception as fout:
             laatste_fout = fout
+            vergrendeld = is_bestand_vergrendeld(output_pad)
             print(f"Opslaan mislukt (poging {poging}/{pogingen}): {fout}")
+            print(f"  Direct getest: bestand is {'WEL' if vergrendeld else 'NIET'} vergrendeld door iets anders.")
             if poging < pogingen:
-                print(f"  Mogelijke oorzaak: het bestand wordt nog even vastgehouden door iets anders "
-                      f"(OneDrive-sync vlak na het kopieren, of een ander geopend Excel-venster met "
-                      f"dezelfde bestandsnaam '{output_pad.name}'). Nieuwe poging over {wachttijd}s...")
+                print(f"  Nieuwe poging over {wachttijd}s...")
                 time.sleep(wachttijd)
     raise RuntimeError(
         f"Opslaan van {output_pad} is na {pogingen} pogingen mislukt. Laatste fout: {laatste_fout}. "
-        f"Controleer of dit bestand ergens anders open staat (sluit dat venster), of dat de map nog "
-        f"actief aan het synchroniseren is via OneDrive."
+        f"Controleer of dit bestand (of de map) ergens anders open staat, of dat OneDrive nog actief "
+        f"aan het synchroniseren is."
     ) from laatste_fout
 
 
@@ -927,7 +942,14 @@ def genereer_voor_retailer(retailer_naam: str, weken_arg, jaar: int, toegestane_
     schrijf_controlebestand(alle_regels, OUTPUT_MAP, weergave_naam)
 
     output_basis = output_basisnaam(weergave_naam, weken, jaar)
-    output_pad = OUTPUT_MAP / f"{output_basis}.xlsx"
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Tijdstempel in de bestandsnaam: garandeert dat elke run een UNIEKE
+    # outputbestandsnaam krijgt, zodat een eerder gegenereerd bestand dat nog
+    # ergens open staat (in een ander Excel-venster) nooit meer kan botsen
+    # met de naam die deze run probeert op te slaan - dat was de meest
+    # waarschijnlijke oorzaak van de aanhoudende "Document not saved."-fout,
+    # want die loste niet vanzelf op binnen de retry-pogingen.
+    output_pad = OUTPUT_MAP / f"{output_basis}_{timestamp}.xlsx"
     shutil.copy2(template_path, output_pad)   # master blijft altijd schoon
 
     app, excel_pid = open_excel_veilig()
