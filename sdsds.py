@@ -299,7 +299,8 @@ def is_mechanisme_marker(rij) -> bool:
 
 def bouw_outputregels(focus: pd.DataFrame, debug: bool = False) -> list:
     regels, buffer = [], []
-    overgeslagen_geen_titel = 0
+    overgeslagen_geen_sap_code = 0
+    geen_artikelnaam = 0
 
     for _, rij in focus.iterrows():
         if is_mechanisme_marker(rij):
@@ -320,11 +321,23 @@ def bouw_outputregels(focus: pd.DataFrame, debug: bool = False) -> list:
 
         sap_raw = rij["sap_code_raw"]
         is_npd = is_npd_code(sap_raw)
-        productnaam = "NPD" if is_npd else rij["artikelnaam"]
+        heeft_sap_code = sap_raw != ""
 
-        if not productnaam and not is_npd:
-            overgeslagen_geen_titel += 1
+        # Een 'item' is elke rij met een ingevulde SAP-code in kolom F (of
+        # een NPD-code), tenzij de kolom C-filters de rij al hebben
+        # uitgesloten (dat gebeurt al eerder, in filter_kolom_c). Een lege
+        # artikelnaam in kolom H is GEEN reden meer om de regel te
+        # negeren - vroeger viel zo'n product onterecht weg.
+        if not heeft_sap_code and not is_npd:
+            overgeslagen_geen_sap_code += 1
             continue
+
+        productnaam = "NPD" if is_npd else rij["artikelnaam"]
+        if not productnaam:
+            geen_artikelnaam += 1
+            if debug:
+                print(f"[DEBUG] SAP-code '{sap_raw}' (EAN {rij['ean'] or '-'}, week {rij['week_int']}) "
+                      f"heeft geen artikelnaam in kolom H - regel wordt toch meegenomen.")
 
         buffer.append({
             "week": rij["week_int"],
@@ -344,8 +357,11 @@ def bouw_outputregels(focus: pd.DataFrame, debug: bool = False) -> list:
         print(f"WAARSCHUWING: {len(zonder_mechanisme)} product(en) zonder mechanismetekst. "
               f"Weken: {sorted({r['week'] for r in zonder_mechanisme})}")
 
-    if overgeslagen_geen_titel:
-        print(f"{overgeslagen_geen_titel} regel(s) overgeslagen: geen productnaam en geen NPD.")
+    if overgeslagen_geen_sap_code:
+        print(f"{overgeslagen_geen_sap_code} regel(s) overgeslagen: geen SAP-code (kolom F) en geen NPD.")
+    if geen_artikelnaam:
+        print(f"WAARSCHUWING: {geen_artikelnaam} regel(s) hadden wel een SAP-code maar GEEN artikelnaam "
+              f"in kolom H - wel meegenomen, maar controleer de CSV (lege productnaam in de output).")
     print(f"bouw_outputregels: {len(regels)} productregel(s) opgebouwd uit {len(focus)} focus-rijen.")
 
     return regels
@@ -440,6 +456,7 @@ XL_CONTINUOUS = 1
 XL_THIN = 2
 XL_MEDIUM = -4138
 XL_SOLID = 1
+XL_SHIFT_DOWN = -4121
 
 
 def kwartaal_van_week(week: int) -> int:
@@ -584,10 +601,10 @@ def _zet_zwarte_onderrand(sheet, rij: int):
     rng.Borders(XL_EDGE_BOTTOM).Weight = XL_MEDIUM
 
 
-def _maak_overtollige_rijen_leeg(sheet, laatste_output_rij: int):
+def _maak_overtollige_rijen_leeg(sheet, laatste_output_rij: int, sjabloon_rij: int):
     used_range = sheet.UsedRange
     laatste_gebruikte_rij = used_range.Row + used_range.Rows.Count - 1
-    bovengrens = min(laatste_gebruikte_rij, TEMPLATE_FORMULE_RIJ)
+    bovengrens = min(laatste_gebruikte_rij, sjabloon_rij)
     if bovengrens > laatste_output_rij:
         bereik = sheet.Range(f"A{laatste_output_rij + 1}:{PRINT_LAATSTE_KOLOM}{bovengrens}")
         bereik.ClearContents()
@@ -612,19 +629,32 @@ def vul_sheet(sheet, retailer_cfg: dict, weken: list, week_groepen: list, tick=N
     datum_cel.NumberFormat = "dd/mm/yyyy"
     sheet.Range(Q_LABEL_CEL).Value = kwartaal_label(weken)
 
-    template_rij = sheet.Rows(TEMPLATE_FORMULE_RIJ)
-
     aantal_regels = sum(len(groep) for _week, mech_groepen in week_groepen for _tekst, groep in mech_groepen)
     aantal_extra_rijen = sum(
         2 for _week, mech_groepen in week_groepen for tekst, _groep in mech_groepen if tekst
     )
     totaal_rijen = aantal_regels + aantal_extra_rijen
 
-    if START_OUTPUT_RIJ + totaal_rijen - 1 >= TEMPLATE_FORMULE_RIJ:
-        raise ValueError(
-            f"Te veel rijen ({totaal_rijen}) voor week(en) {weken} - "
-            f"dit zou rij {TEMPLATE_FORMULE_RIJ} overschrijven."
-        )
+    # Vaste placeholder-ruimte tussen START_OUTPUT_RIJ en de sjabloon-/
+    # formulerij (rijen 7 t/m 121 = 115 rijen). Als er meer rijen nodig zijn
+    # dan dat (bv. een heel kwartaal met veel artikelen), voegen we het
+    # tekort aan lege rijen in vlak vóór de sjabloonrij. Die rij (en alles
+    # eronder, zoals een eventuele totalenregel) schuift daardoor automatisch
+    # mee naar beneden - Excel past de formules in de meegeschoven rijen
+    # daarbij zelf aan. Zo is er geen vaste bovengrens meer en gebeurt dit
+    # alleen wanneer het echt nodig is; bij een 'normale' kleinere week-
+    # selectie verandert er niets aan het bestaande gedrag.
+    vaste_capaciteit = TEMPLATE_FORMULE_RIJ - START_OUTPUT_RIJ
+    tekort = totaal_rijen - vaste_capaciteit
+
+    if tekort > 0:
+        sheet.Rows(f"{TEMPLATE_FORMULE_RIJ}:{TEMPLATE_FORMULE_RIJ + tekort - 1}").Insert(Shift=XL_SHIFT_DOWN)
+        print(f"Let op: {totaal_rijen} rijen nodig voor week(en) {weken}, vaste sjabloonruimte was "
+              f"{vaste_capaciteit} - {tekort} extra rij(en) ingevoegd vóór de sjabloonrij (rij "
+              f"{TEMPLATE_FORMULE_RIJ}).")
+
+    huidige_template_rij = TEMPLATE_FORMULE_RIJ + max(tekort, 0)
+    template_rij = sheet.Rows(huidige_template_rij)
 
     rij = START_OUTPUT_RIJ
 
@@ -665,7 +695,7 @@ def vul_sheet(sheet, retailer_cfg: dict, weken: list, week_groepen: list, tick=N
 
     if laatste_rij >= START_OUTPUT_RIJ:
         _zet_zwarte_onderrand(sheet, laatste_rij)
-        _maak_overtollige_rijen_leeg(sheet, laatste_rij)
+        _maak_overtollige_rijen_leeg(sheet, laatste_rij, huidige_template_rij)
 
     sheet.PageSetup.PrintArea = f"$A$1:${PRINT_LAATSTE_KOLOM}${laatste_rij}"
     return laatste_rij
