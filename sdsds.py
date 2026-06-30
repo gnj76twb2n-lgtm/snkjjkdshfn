@@ -22,30 +22,38 @@ BRON_MAP = Path("inzicht")
 OUTPUT_MAP = Path("output")
 
 DIRK_TEMPLATE_BESTAND = "Actievoorstellen.xlsx"   # gewone Excel, geen macrobestand; zelfde bestand voor elke retailer
+DIRK_SHEET_TEMPLATE = "Promoplan Dirk 2026"        # zelfde tabbladnaam in de template, voor elke retailer
 
-# BEVESTIGDE REGEL: alle retailers gebruiken Actievoorstellen.xlsx als
-# startbestand. Alleen Poiesz krijgt een apart tabblad per week; elke
-# andere (huidige of toekomstige) retailer gebruikt 1 doorlopend tabblad.
-RETAILERS = {
-    "poiesz": {
-        "weergave_naam": "Poiesz",
-        "sheet_template": "Promoplan Dirk 2026",
-        "titel": "Poiesz aktie-overzicht 2026",
-        "accountmanager": "Laura Schoemaker",
-        "categorie": "Frozen Food",
-        "meerdere_sheets_per_week": True,
-        "gele_mechanisme_headers": True,
-    },
-    "hoogvliet": {
-        "weergave_naam": "Hoogvliet",
-        "sheet_template": None,                          # None = ActiveSheet van het template-bestand
-        "titel": "Hoogvliet aktie-overzicht 2026",        # TODO: check exacte gewenste tekst
-        "accountmanager": "Ben",
-        "categorie": "Frozen Food",
-        "meerdere_sheets_per_week": False,                # bevestigd: 1 doorlopend tabblad
-        "gele_mechanisme_headers": False,                 # TODO: check of dit ook moet
-    },
+# BEVESTIGDE REGEL: elke winkelnaam werkt nu, zonder dat je 'm eerst hier
+# hoeft te registreren. Alleen Poiesz krijgt een apart tabblad per week;
+# elke andere (bestaande of toekomstige) retailer gebruikt automatisch 1
+# doorlopend tabblad - puur op basis van de naam, geen config-entry nodig.
+#
+# RETAILER_OVERRIDES is alleen voor de details die we al hebben bevestigd
+# voor specifieke winkels (titel-tekst, accountmanager). Voor elke andere
+# winkelnaam wordt titel automatisch "<Naam> aktie-overzicht 2026", en kan
+# de accountmanager via --accountmanager worden meegegeven.
+RETAILER_OVERRIDES = {
+    "poiesz": {"titel": "Poiesz aktie-overzicht 2026", "accountmanager": "Laura Schoemaker"},
+    "hoogvliet": {"titel": "Hoogvliet aktie-overzicht 2026", "accountmanager": "Ben"},
 }
+
+
+def bouw_retailer_cfg(retailer_naam: str, accountmanager_arg) -> dict:
+    overrides = RETAILER_OVERRIDES.get(retailer_naam.lower(), {})
+    return {
+        "weergave_naam": retailer_naam,
+        "sheet_template": DIRK_SHEET_TEMPLATE,
+        "titel": overrides.get("titel", f"{retailer_naam} aktie-overzicht 2026"),
+        "accountmanager": accountmanager_arg or overrides.get("accountmanager", ""),
+        "categorie": "Frozen Food",
+        "meerdere_sheets_per_week": retailer_naam.lower() == "poiesz",
+        # AANNAME: de gele-mechanisme-groepering is een eigenschap van de
+        # GEDEELDE template zelf (1 tabblad "Promoplan Dirk 2026" voor
+        # iedereen), niet iets specifieks voor Poiesz - vandaar True voor
+        # elke retailer. Zeg het als dit voor sommige winkels niet moet.
+        "gele_mechanisme_headers": True,
+    }
 
 FOCUS_KOLOMMEN = {
     "week": "A", "kolom_c": "C",
@@ -501,6 +509,12 @@ def bouw_outputregels(focus: pd.DataFrame) -> list:
 
     regels.extend(buffer)   # sectie(s) zonder afsluitende marker: toch meenemen
 
+    zonder_mechanisme = [r for r in regels if not r["mechanisme_kort"] and r["productnaam"] != "NPD"]
+    if zonder_mechanisme:
+        print(f"WAARSCHUWING: {len(zonder_mechanisme)} product(en) zonder mechanismetekst "
+              f"(geen afsluitende markerrij gevonden voor hun sectie in de CSV). Weken: "
+              f"{sorted({r['week'] for r in zonder_mechanisme})}")
+
     if overgeslagen_geen_titel:
         print(f"{overgeslagen_geen_titel} regel(s) overgeslagen: geen productnaam en geen NPD.")
     print(f"  bouw_outputregels: {len(regels)} productregel(s) opgebouwd uit {len(focus)} focus-rijen.")
@@ -536,6 +550,22 @@ def groepeer_per_mechanisme(regels: list) -> list:
             volgorde.append(sleutel)
         groepen[sleutel].append(regel)
     return [(sleutel, groepen[sleutel]) for sleutel in volgorde]
+
+
+def groepeer_per_week_en_mechanisme(regels: list) -> list:
+    """Groepeert EERST per week (volgorde van eerste voorkomen), DAARBINNEN
+    per mechanisme. Cruciaal voor sheets met meerdere weken op 1 tabblad
+    (alle retailers behalve Poiesz): zonder deze stap zouden weken die
+    toevallig identieke mechanismetekst hebben door elkaar lopen, en kreeg
+    alleen de allereerste week van de hele sheet ooit een "V"/weeknummer."""
+    per_week, volgorde_weken = {}, []
+    for regel in regels:
+        week = regel["week"]
+        if week not in per_week:
+            per_week[week] = []
+            volgorde_weken.append(week)
+        per_week[week].append(regel)
+    return [(week, groepeer_per_mechanisme(per_week[week])) for week in volgorde_weken]
 
 
 def schrijf_controlebestand(regels: list, output_dir: Path, retailer: str) -> Path:
@@ -666,8 +696,8 @@ def _controleer_ean_formules(sheet, rij: int, sheet_naam: str):
         print(f"  [{sheet_naam}] EAN-formule-check: alle kolommen {EAN_FORMULE_KOLOMMEN} hebben een formule. OK.")
 
 
-def _schrijf_productrij(sheet, rij: int, regel: dict, eerste_rij_van_sheet: bool, sheet_naam: str = ""):
-    if eerste_rij_van_sheet:
+def _schrijf_productrij(sheet, rij: int, regel: dict, eerste_rij_van_week: bool, sheet_naam: str = ""):
+    if eerste_rij_van_week:
         sheet.Range(f"{KOL_A_DVIP}{rij}").Value = KOLOM_A_VASTE_WAARDE
         sheet.Range(f"{KOL_B_WEEK}{rij}").Value = regel["week"]
         _controleer_ean_formules(sheet, rij, sheet_naam)
@@ -733,12 +763,20 @@ def vul_week_sheet(sheet, retailer_cfg: dict, weken: list, regels: list) -> int:
     gegroepeerd = retailer_cfg.get("gele_mechanisme_headers", False)
     template_rij = sheet.Rows(TEMPLATE_FORMULE_RIJ)
 
+    # ALTIJD eerst per week groeperen (ook al lijkt dat voor Poiesz overbodig
+    # omdat daar toch maar 1 week per sheet-aanroep binnenkomt - voor elke
+    # andere retailer met meerdere weken op 1 doorlopend tabblad is dit
+    # cruciaal: zonder deze stap kreeg alleen de allereerste week van de
+    # hele sheet ooit een "V"/weeknummer, en konden weken met toevallig
+    # identieke mechanismetekst door elkaar lopen.
+    week_groepen = groepeer_per_week_en_mechanisme(regels)
+
     if gegroepeerd:
-        groepen = groepeer_per_mechanisme(regels)
-        aantal_extra_rijen = sum(2 for tekst, _ in groepen if tekst)   # spacer + mechanisme-rij per groep
+        aantal_extra_rijen = sum(
+            2 for _week, mech_groepen in week_groepen for tekst, _ in mech_groepen if tekst
+        )   # spacer + mechanisme-rij per (week, mechanisme)-combinatie
         totaal_rijen = len(regels) + aantal_extra_rijen
     else:
-        groepen = [("", regels)]
         totaal_rijen = len(regels)
 
     if START_OUTPUT_RIJ + totaal_rijen - 1 >= TEMPLATE_FORMULE_RIJ:
@@ -748,30 +786,38 @@ def vul_week_sheet(sheet, retailer_cfg: dict, weken: list, regels: list) -> int:
         )
 
     rij = START_OUTPUT_RIJ
-    eerste_product_geschreven = False
 
-    for groep_index, (mechanisme_tekst, groep_regels) in enumerate(groepen):
-        if gegroepeerd and mechanisme_tekst:
-            template_rij.Copy()
-            sheet.Rows(rij).PasteSpecial(Paste=XL_PASTE_ALL)
-            _schrijf_witte_spacer_rij(sheet, rij, zwarte_bovenrand=(groep_index == 0))
-            rij += 1
+    for week_index, (week, mech_groepen) in enumerate(week_groepen):
+        eerste_product_van_week = True
 
-            template_rij.Copy()
-            sheet.Rows(rij).PasteSpecial(Paste=XL_PASTE_ALL)
-            _schrijf_mechanisme_rij(sheet, rij, mechanisme_tekst)
-            rij += 1
+        if not gegroepeerd:
+            mech_groepen = [("", [r for _, groep in mech_groepen for r in groep])]
 
-        for regel in groep_regels:
-            template_rij.Copy()
-            sheet.Rows(rij).PasteSpecial(Paste=XL_PASTE_ALL)
-            _schrijf_productrij(
-                sheet, rij, regel,
-                eerste_rij_van_sheet=not eerste_product_geschreven,
-                sheet_naam=sheet.Name,
-            )
-            eerste_product_geschreven = True
-            rij += 1
+        for groep_index, (mechanisme_tekst, groep_regels) in enumerate(mech_groepen):
+            if gegroepeerd and mechanisme_tekst:
+                template_rij.Copy()
+                sheet.Rows(rij).PasteSpecial(Paste=XL_PASTE_ALL)
+                # Zwarte bovenrand: alleen bij de EERSTE groep van DEZE week
+                # (markeert het begin van een nieuwe week-sectie), niet
+                # alleen bij de allereerste groep van de hele sheet.
+                _schrijf_witte_spacer_rij(sheet, rij, zwarte_bovenrand=(groep_index == 0))
+                rij += 1
+
+                template_rij.Copy()
+                sheet.Rows(rij).PasteSpecial(Paste=XL_PASTE_ALL)
+                _schrijf_mechanisme_rij(sheet, rij, mechanisme_tekst)
+                rij += 1
+
+            for regel in groep_regels:
+                template_rij.Copy()
+                sheet.Rows(rij).PasteSpecial(Paste=XL_PASTE_ALL)
+                _schrijf_productrij(
+                    sheet, rij, regel,
+                    eerste_rij_van_week=eerste_product_van_week,
+                    sheet_naam=sheet.Name,
+                )
+                eerste_product_van_week = False
+                rij += 1
 
     laatste_rij = rij - 1
     sheet.Application.CutCopyMode = False
@@ -788,8 +834,8 @@ def vul_week_sheet(sheet, retailer_cfg: dict, weken: list, regels: list) -> int:
 # Hoofdflow per retailer
 # ====================================================================
 
-def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_kolom_c):
-    cfg = RETAILERS[retailer_key]
+def genereer_voor_retailer(retailer_naam: str, weken_arg, jaar: int, toegestane_kolom_c, accountmanager_arg):
+    cfg = bouw_retailer_cfg(retailer_naam, accountmanager_arg)
     weergave_naam = cfg["weergave_naam"]
 
     template_path = Path(DIRK_TEMPLATE_BESTAND)
@@ -936,26 +982,31 @@ def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_k
 
 def main():
     parser = argparse.ArgumentParser(description="Genereer actievoorstel per retailer")
-    parser.add_argument("--retailer", default="Hoogvliet")
+    parser.add_argument("--retailer", default="Hoogvliet",
+                         help="Naam van de winkel/retailer, bv. Poiesz, Hoogvliet, Dirk, Spar, ... "
+                              "Elke naam werkt, zolang er een bijbehorend Promo Focus-bestand bestaat.")
     parser.add_argument("--jaar", type=int, default=dt.date.today().year)
     parser.add_argument("--weken", default=None,
                          help="Komma-gescheiden weeknummers, bv. 37 of 37,38,40. Standaard: hele Q4.")
     parser.add_argument("--toegestane-kolom-c", dest="toegestane_kolom_c", default=None,
                          help="Pipe-gescheiden teksten die ondanks delist/gesaneerd/sanering toch mogen, "
                               "bv. \"sanering wk40 2026|sanering\"")
+    parser.add_argument("--accountmanager", default=None,
+                         help="Naam van de accountmanager voor deze retailer. Voor Poiesz/Hoogvliet hoeft dit "
+                              "niet (al bevestigd), voor andere winkels wel aan te raden.")
     parser.add_argument("--skip-cleanup", action="store_true")
     args = parser.parse_args()
 
-    retailer_key = args.retailer.strip().lower()
-    if retailer_key not in RETAILERS:
-        print(f"Onbekende retailer '{args.retailer}'. Bekend: {list(RETAILERS.keys())}")
+    retailer_naam = args.retailer.strip()
+    if not retailer_naam:
+        print("Geen retailer opgegeven.")
         sys.exit(1)
 
     if not args.skip_cleanup:
         kill_orphan_excel()
 
     try:
-        genereer_voor_retailer(retailer_key, args.weken, args.jaar, args.toegestane_kolom_c)
+        genereer_voor_retailer(retailer_naam, args.weken, args.jaar, args.toegestane_kolom_c, args.accountmanager)
     except Exception as error:
         print("")
         print("FOUT:")
