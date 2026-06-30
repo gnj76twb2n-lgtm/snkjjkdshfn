@@ -614,7 +614,7 @@ def _zet_zwarte_onderrand(sheet, rij: int):
     rng.Borders(XL_EDGE_BOTTOM).Weight = XL_MEDIUM
 
 
-_IGLO_VOETNOOT_PATROON = re.compile(r"\*{1,3}\s*Iglo", re.IGNORECASE)
+_VOETNOOT_PATROON = re.compile(r"^\s*\*{1,3}(?!\*)\s*\S")
 _DIRK_PATROON = re.compile(r"\bDirk\b", re.IGNORECASE)
 
 
@@ -629,11 +629,12 @@ def _rij_tekst(sheet, rij: int) -> str:
     return " ".join(str(c) for c in cellen if c not in (None, ""))
 
 
-def _is_iglo_voetnoot(tekst: str) -> bool:
-    # \*{1,3} matcht 1, 2 OF 3 sterretjes - dus *Iglo, **Iglo en ***Iglo
-    # worden hier alle drie door herkend, ongeacht volgorde of wat er
-    # verder nog tussen de voetnootrijen in staat.
-    return bool(_IGLO_VOETNOOT_PATROON.search(tekst))
+def _is_voetnoot_rij(tekst: str) -> bool:
+    # ^\*{1,3}(?!\*) matcht 1, 2 OF 3 sterretjes aan het BEGIN van de rij
+    # (en niet een 4e sterretje erna). Wat er ná de sterretjes staat maakt
+    # niet uit - sommige voetnoten beginnen met '* Iglo ...', andere met
+    # bijvoorbeeld '*** De Actie-inkoopprijs ...' zonder 'Iglo' erin.
+    return bool(_VOETNOOT_PATROON.search(tekst))
 
 
 def _vervang_dirk_in_rij(sheet, rij: int, retailer_naam: str):
@@ -658,11 +659,12 @@ def _vervang_dirk_in_rij(sheet, rij: int, retailer_naam: str):
 def _verwijder_overtollige_rijen(sheet, laatste_output_rij: int, sjabloon_rij: int, retailer_naam: str = None) -> int:
     """Verwijdert de oude placeholder-rijen tussen het laatst geschreven
     artikel en de sjabloon-/formulerij ECHT (met Delete, niet alleen
-    leegmaken zoals voorheen). Een rij die een *Iglo / **Iglo / ***Iglo
-    voetnoottekst bevat blijft staan; komt diezelfde voetnoottekst meerdere
-    keren voor, dan blijft alleen de eerste keer staan en wordt de rest
-    verwijderd. In de behouden voetnootrijen wordt 'Dirk' vervangen door de
-    echte retailernaam, als die is meegegeven. Geeft de (na verwijdering
+    leegmaken zoals voorheen). Een rij die begint met 1, 2 of 3 sterretjes
+    (*, ** of ***, los van wat erachter staat) wordt als voetnoot gezien en
+    blijft staan; komt diezelfde voetnoottekst meerdere keren voor, dan
+    blijft alleen de eerste keer staan en wordt de rest verwijderd. In de
+    behouden voetnootrijen wordt 'Dirk' vervangen door de echte
+    retailernaam, als die is meegegeven. Geeft de (na verwijdering
     opgeschoven) positie van de sjabloonrij terug."""
     if sjabloon_rij <= laatste_output_rij + 1:
         return sjabloon_rij
@@ -673,7 +675,7 @@ def _verwijder_overtollige_rijen(sheet, laatste_output_rij: int, sjabloon_rij: i
 
     for rij in range(laatste_output_rij + 1, sjabloon_rij):
         tekst = _rij_tekst(sheet, rij)
-        if _is_iglo_voetnoot(tekst):
+        if _is_voetnoot_rij(tekst):
             sleutel = tekst.strip().lower()
             if sleutel in geziene_voetnoten:
                 te_verwijderen.append(rij)  # duplicaat van een voetnoot -> ook weg
@@ -693,7 +695,7 @@ def _verwijder_overtollige_rijen(sheet, laatste_output_rij: int, sjabloon_rij: i
         sheet.Rows(rij).Delete(Shift=XL_SHIFT_UP)
 
     print(f"{len(te_verwijderen)} oude placeholder-rij(en) verwijderd, "
-          f"{len(geziene_voetnoten)} *Iglo-voetnoot(en) behouden "
+          f"{len(geziene_voetnoten)} voetnootregel(s) (*/**/***) behouden "
           f"(rijen vóór verschuiving: {te_behouden}).")
 
     return sjabloon_rij - len(te_verwijderen)
