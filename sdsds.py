@@ -1,3 +1,4 @@
+
 import argparse
 import datetime as dt
 import glob
@@ -804,15 +805,30 @@ def _zet_zwarte_onderrand(sheet, rij: int):
 
 
 def _verwijder_overtollige_rijen(sheet, laatste_output_rij: int):
-    """Verwijdert restanten van de gekopieerde template die na de laatste
-    echte outputrij nog in deze sheet-KOPIE staan. Gaat NOOIT verder dan
-    TEMPLATE_FORMULE_RIJ - voor het geval er verderop in de sheet nog iets
-    staat (bv. een lokale opzoektabel) dat niet zomaar verwijderd mag worden."""
+    """Maakt restanten van de gekopieerde template (oude voorbeeldregels die
+    nog in deze sheet-KOPIE stonden) LEEG, in plaats van de rijen fysiek te
+    VERWIJDEREN. Rows().Delete() bleek de oorzaak van een aanhoudende
+    'Document not saved.'-fout bij het opslaan - vermoedelijk doordat het
+    verschuiven van rijen ergens een merged cel of benoemd bereik verderop
+    in de template beschadigde. Met ClearContents + opmaak-reset blijft de
+    rijstructuur exact gelijk (geen verschuiving), en is het resultaat
+    visueel identiek (geen rommel meer onderaan), maar zonder dat risico."""
     used_range = sheet.UsedRange
     laatste_gebruikte_rij = used_range.Row + used_range.Rows.Count - 1
     bovengrens = min(laatste_gebruikte_rij, TEMPLATE_FORMULE_RIJ)
     if bovengrens > laatste_output_rij:
-        sheet.Rows(f"{laatste_output_rij + 1}:{bovengrens}").Delete()
+        bereik = sheet.Range(f"A{laatste_output_rij + 1}:{PRINT_LAATSTE_KOLOM}{bovengrens}")
+        bereik.ClearContents()
+        bereik.Interior.ColorIndex = 2   # wit/leeg, geen kleurrestanten
+        try:
+            bereik.Borders(XL_EDGE_TOP).LineStyle = 0
+            bereik.Borders(XL_EDGE_BOTTOM).LineStyle = 0
+            bereik.Borders(XL_EDGE_LEFT).LineStyle = 0
+            bereik.Borders(XL_EDGE_RIGHT).LineStyle = 0
+            bereik.Borders(XL_INSIDE_HORIZONTAL).LineStyle = 0
+            bereik.Borders(XL_INSIDE_VERTICAL).LineStyle = 0
+        except Exception:
+            pass
 
 
 def vul_week_sheet(sheet, retailer_cfg: dict, weken: list, regels: list, tick=None) -> int:
