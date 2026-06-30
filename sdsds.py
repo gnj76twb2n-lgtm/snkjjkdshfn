@@ -234,7 +234,8 @@ def normaliseer_mechanisme_basis(mechanisme) -> str:
 
 
 _MECHANISME_PATRONEN = [
-    r"\b\d+\s*\+\s*\d+\s+gratis\b",
+    r"\b\d+\s*\+\s*\d+\b",                    # kale 'N + N' (bv. '1 + 1', zonder 'gratis')
+    r"\b\d+\s*\+\s*\d+\s+gratis\b",            # specifieker: 'N+N gratis' - wint bij gelijke startpositie
     r"\b\d{1,3}\s*%\s*korting\b",
     r"\b\d+\s*(?:e|de|ste)\s+gratis\b",
     r"\b\d+\s*(?:e|de|ste)\s+halve\s+prijs\b",
@@ -260,14 +261,19 @@ def extraheer_mechanisme_tekst(mechanisme) -> str:
 
 
 def formatteer_actiemechanisme_geel(mechanisme) -> str:
+    """Volledig uitgeschreven tekst voor de gele mechanisme-rij: EXACT de
+    brontekst (na het strippen van het leidende volgnummer en SPO->1 voor),
+    GEEN automatische merk-prefix meer. Voorbeeld eerder gaf het verkeerde
+    idee: daar stond 'Iglo' toevallig al in de brontekst zelf, dat is
+    verkeerd geinterpreteerd als 'altijd toevoegen' - bij '20. Vissticks
+    1 + 1' hoort het gewoon 'Vissticks 1 + 1' te worden, zonder Iglo ervoor."""
     tekst = normaliseer_mechanisme_basis(mechanisme)
     if not tekst:
         return ""
     tekst = re.sub(r"\b(\d+)\s*\+\s*(\d+)\s+gratis\b", r"\1 + \2 gratis", tekst, flags=re.IGNORECASE)
+    tekst = re.sub(r"\b(\d+)\s*\+\s*(\d+)\b", r"\1 + \2", tekst)   # ook spacing fixen zonder 'gratis'
     tekst = re.sub(r"\s*%\s*", "% ", tekst)
     tekst = re.sub(r"\s+", " ", tekst).strip()
-    if not tekst.lower().startswith("iglo "):
-        tekst = "Iglo " + tekst
     return tekst
 
 
@@ -285,7 +291,7 @@ def is_mechanisme_marker(rij) -> bool:
     return rij["sap_code_raw"] == "" and bool(rij["mech_d"] or rij["mech_e"])
 
 
-def bouw_outputregels(focus: pd.DataFrame) -> list:
+def bouw_outputregels(focus: pd.DataFrame, debug: bool = False) -> list:
     regels, buffer = [], []
     overgeslagen_geen_titel = 0
 
@@ -294,6 +300,11 @@ def bouw_outputregels(focus: pd.DataFrame) -> list:
             mechanisme_ruw = rij["mech_d"] or rij["mech_e"]
             mechanisme_vol = formatteer_actiemechanisme_geel(mechanisme_ruw)
             mechanisme_kort = formatteer_actiemechanisme_kolom_p(mechanisme_ruw)
+            if debug:
+                print(f"[DEBUG marker week={rij['week_int']}] bron={mechanisme_ruw!r}")
+                print(f"  -> kolom E (geel) = {mechanisme_vol!r}")
+                print(f"  -> kolom P (kort) = {mechanisme_kort!r}")
+                print(f"  -> {len(buffer)} product(en) krijgen dit toegekend: {[r['productnaam'] for r in buffer]}")
             for regel in buffer:
                 regel["mechanisme_vol"] = mechanisme_vol
                 regel["mechanisme_kort"] = mechanisme_kort
@@ -837,7 +848,7 @@ def output_basisnaam(retailer_naam: str, weken: list, jaar: int) -> str:
     return f"{retailer_naam}_actievoorstel_{periode}_{jaar}"
 
 
-def genereer(retailer_naam: str, weken_arg, jaar: int, toegestane_kolom_c, accountmanager_arg):
+def genereer(retailer_naam: str, weken_arg, jaar: int, toegestane_kolom_c, accountmanager_arg, debug: bool = False):
     cfg = bouw_retailer_cfg(retailer_naam, accountmanager_arg)
 
     template_path = Path(DIRK_TEMPLATE_BESTAND)
@@ -859,7 +870,7 @@ def genereer(retailer_naam: str, weken_arg, jaar: int, toegestane_kolom_c, accou
     focus = focus[focus["week_int"].isin(weken)]
     print(f"  na week-selectie (gevraagd: {weken}): {len(focus)} rijen")
 
-    alle_regels = bouw_outputregels(focus)
+    alle_regels = bouw_outputregels(focus, debug=debug)
     voeg_advies_kruisjes_toe(alle_regels)
     week_groepen = groepeer_per_week_en_mechanisme(alle_regels)
     print(f"Aantal artikelen: {len(alle_regels)}")
@@ -943,7 +954,7 @@ def cmd_csv(args):
 def cmd_regels(args):
     pad = _resolve_csv_pad(args)
     focus = filter_kolom_c(laad_focus_data(pad))
-    regels = bouw_outputregels(focus)
+    regels = bouw_outputregels(focus, debug=args.debug)
     voeg_advies_kruisjes_toe(regels)
 
     print(f"\nAantal artikelen: {len(regels)}")
@@ -972,7 +983,8 @@ def cmd_main(args):
     if not args.skip_cleanup:
         kill_orphan_excel()
     try:
-        genereer(args.retailer.strip(), args.weken, args.jaar, args.toegestane_kolom_c, args.accountmanager)
+        genereer(args.retailer.strip(), args.weken, args.jaar, args.toegestane_kolom_c,
+                 args.accountmanager, debug=args.debug)
     except Exception as error:
         print("\nFOUT:")
         print(error)
@@ -994,6 +1006,8 @@ def main():
 
     p_regels = sub.add_parser("regels", help="Onderdeel 2: regels bouwen testen")
     voeg_csv_opties_toe(p_regels)
+    p_regels.add_argument("--debug", action="store_true",
+                           help="Print per markerrij de brontekst naast wat kolom E/P ervan maken.")
     p_regels.set_defaults(func=cmd_regels)
 
     p_bestand = sub.add_parser("bestand", help="Onderdeel 4: bestand-zoeklogica testen")
@@ -1010,6 +1024,8 @@ def main():
     p_main.add_argument("--toegestane-kolom-c", dest="toegestane_kolom_c", default=None)
     p_main.add_argument("--accountmanager", default=None)
     p_main.add_argument("--skip-cleanup", action="store_true")
+    p_main.add_argument("--debug", action="store_true",
+                         help="Print per markerrij de brontekst naast wat kolom E/P ervan maken.")
     p_main.set_defaults(func=cmd_main)
 
     args = parser.parse_args()
