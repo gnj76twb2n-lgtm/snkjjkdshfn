@@ -42,7 +42,7 @@ import pandas as pd
 # ======================================================================
 
 FOCUS_KOLOMMEN = {
-    "week": "A", "kolom_c": "C",
+    "week": "A", "week_b": "B", "kolom_c": "C",
     "mech_d": "D", "mech_e": "E",
     "sap_code": "F", "ean": "G", "artikelnaam": "H",
     "kolom_l_bron": "O",
@@ -162,6 +162,7 @@ def laad_focus_data(pad: Path) -> pd.DataFrame:
 
     df = pd.DataFrame({
         "week_int": raw.iloc[:, idx["week"]].apply(clean_week),
+        "week_b": raw.iloc[:, idx["week_b"]].apply(clean_week),
         "kolom_c": raw.iloc[:, idx["kolom_c"]].apply(clean_text),
         "mech_d": raw.iloc[:, idx["mech_d"]].apply(clean_text),
         "mech_e": raw.iloc[:, idx["mech_e"]].apply(clean_text),
@@ -176,8 +177,8 @@ def laad_focus_data(pad: Path) -> pd.DataFrame:
     df = df[df["week_int"].notna()].copy()
     print(f"  na week-filter (kolom A moet een geldig getal zijn): {len(df)} rijen")
 
-    is_marker = (df["sap_code_raw"] == "") & ((df["mech_d"] != "") | (df["mech_e"] != ""))
-    print(f"  waarvan {int(is_marker.sum())} mechanisme-markerrij(en) gevonden (geen sap-code, tekst in D/E)")
+    is_marker = df["week_b"].notna() & (df["week_b"] == df["week_int"])
+    print(f"  waarvan {int(is_marker.sum())} mechanisme-markerrij(en) gevonden (kolom B == kolom A op die rij)")
 
     heeft_ean = df["ean"].ne("") & df["ean"].notna()
     leeg_ean = (~heeft_ean) & (df["sap_code_raw"] != "")
@@ -288,7 +289,12 @@ def formatteer_actiemechanisme_kolom_p(mechanisme) -> str:
 
 
 def is_mechanisme_marker(rij) -> bool:
-    return rij["sap_code_raw"] == "" and bool(rij["mech_d"] or rij["mech_e"])
+    """De markerrij wordt herkend doordat kolom B op die rij hetzelfde
+    weeknummer bevat als kolom A (terwijl kolom B op gewone productrijen
+    leeg is). NIET meer op basis van een lege SAP-code - dat pakte soms per
+    ongeluk een gewone productrij met een toevallig lege SAP-code, en las
+    daar dan de artikelnaam i.p.v. een mechanismetekst uit kolom D."""
+    return pd.notna(rij["week_b"]) and rij["week_b"] == rij["week_int"]
 
 
 def bouw_outputregels(focus: pd.DataFrame, debug: bool = False) -> list:
