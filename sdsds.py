@@ -490,7 +490,7 @@ def vind_template_sheet(wb, naam):
 
 _ALLE_KOLOMMEN = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J",
                   "K", "L", "M", "N", "O", "P", "Q", "R"]
-KOLOMMEN_MET_DIKKE_LINKERRAND = ("A", "J")
+KOLOMMEN_MET_DIKKE_LINKERRAND = ("A", "J", "K", "L", "M", "N", "O", "P", "Q", "R")
 
 
 def zet_verticale_lijnen_zonder_horizontaal(sheet, rij: int):
@@ -515,7 +515,7 @@ def zet_verticale_lijnen_zonder_horizontaal(sheet, rij: int):
 
         rechterrand = sheet.Range(f"{PRINT_LAATSTE_KOLOM}{rij}").Borders(XL_EDGE_RIGHT)
         rechterrand.LineStyle = XL_CONTINUOUS
-        rechterrand.Weight = XL_THIN
+        rechterrand.Weight = XL_MEDIUM
     except Exception:
         pass
 
@@ -615,14 +615,20 @@ def _zet_zwarte_onderrand(sheet, rij: int):
     rng.Borders(XL_EDGE_BOTTOM).Weight = XL_MEDIUM
 
 
-_VOETNOOT_PATROON = re.compile(r"^\s*\*{1,3}(?!\*)\s*\S")
+_VOETNOOT_PATROON = re.compile(r"^\s*\*{1,2}(?!\*)\s*\S")
 _DIRK_PATROON = re.compile(r"\bDirk\b", re.IGNORECASE)
+
+# De ***-voetnoot bleek soms rommelig/onvolledig in het sjabloon te staan
+# (verschillend per weekselectie). In plaats van die nog te proberen
+# detecteren, wordt deze ene tekst nu altijd vast neergezet, direct onder
+# de (wel nog dynamisch herkende) * en ** voetnoten.
+ACTIE_INKOOPPRIJS_VOETNOOT_TEKST = "*** De Actie-inkoopprijs inc. korting obv scanning achteraf is leidend."
 
 
 def _rij_tekst(sheet, rij: int) -> str:
     """Plakt de inhoud van alle cellen op een rij (kolom A t/m
     PRINT_LAATSTE_KOLOM) aan elkaar, zodat we per rij kunnen checken of er
-    een *Iglo-voetnoottekst in staat (ongeacht in welke kolom precies)."""
+    een voetnoottekst in staat (ongeacht in welke kolom precies)."""
     waarden = sheet.Range(f"A{rij}:{PRINT_LAATSTE_KOLOM}{rij}").Value
     if waarden is None:
         return ""
@@ -631,10 +637,11 @@ def _rij_tekst(sheet, rij: int) -> str:
 
 
 def _is_voetnoot_rij(tekst: str) -> bool:
-    # ^\*{1,3}(?!\*) matcht 1, 2 OF 3 sterretjes aan het BEGIN van de rij
-    # (en niet een 4e sterretje erna). Wat er ná de sterretjes staat maakt
-    # niet uit - sommige voetnoten beginnen met '* Iglo ...', andere met
-    # bijvoorbeeld '*** De Actie-inkoopprijs ...' zonder 'Iglo' erin.
+    # ^\*{1,2}(?!\*) matcht 1 OF 2 sterretjes aan het BEGIN van de rij,
+    # mits er niet nog een sterretje op volgt (dus *** wordt hier bewust
+    # NIET meer door herkend - die zetten we altijd vast neer, zie
+    # ACTIE_INKOOPPRIJS_VOETNOOT_TEKST). Wat er ná de sterretjes staat
+    # maakt verder niet uit.
     return bool(_VOETNOOT_PATROON.search(tekst))
 
 
@@ -657,18 +664,34 @@ def _vervang_dirk_in_rij(sheet, rij: int, retailer_naam: str):
         print(f"  rij {rij}: 'Dirk' vervangen door '{retailer_naam}' in voetnoottekst.")
 
 
+def _voeg_vaste_actieprijs_voetnoot_toe(sheet, laatste_rij: int, sjabloon_rij: int) -> int:
+    """Zet ALTIJD, ongeacht wat er in het sjabloon staat (of stond), de
+    vaste ***-tekst (ACTIE_INKOOPPRIJS_VOETNOOT_TEKST) op de rij direct
+    onder laatste_rij - dit is eenvoudiger en betrouwbaarder dan proberen
+    'm uit het sjabloon te detecteren, wat per weekselectie wisselende/
+    rommelige tekst opleverde. Geeft de (na invoegen opgeschoven) positie
+    van de sjabloonrij terug."""
+    nieuwe_rij = laatste_rij + 1
+    sheet.Rows(nieuwe_rij).Insert(Shift=XL_SHIFT_DOWN)
+    sheet.Range(f"A{nieuwe_rij}").Value = ACTIE_INKOOPPRIJS_VOETNOOT_TEKST
+    print(f"  rij {nieuwe_rij}: vaste ***-voetnoottekst neergezet.")
+    return sjabloon_rij + 1
+
+
 def _verwijder_overtollige_rijen(sheet, laatste_output_rij: int, sjabloon_rij: int, retailer_naam: str = None) -> int:
     """Verwijdert de oude placeholder-rijen tussen het laatst geschreven
     artikel en de sjabloon-/formulerij ECHT (met Delete, niet alleen
-    leegmaken zoals voorheen). Een rij die begint met 1, 2 of 3 sterretjes
-    (*, ** of ***, los van wat erachter staat) wordt als voetnoot gezien en
+    leegmaken zoals voorheen). Een rij die begint met 1 of 2 sterretjes
+    (* of **, los van wat erachter staat) wordt als voetnoot gezien en
     blijft staan; komt diezelfde voetnoottekst meerdere keren voor, dan
     blijft alleen de eerste keer staan en wordt de rest verwijderd. In de
     behouden voetnootrijen wordt 'Dirk' vervangen door de echte
-    retailernaam, als die is meegegeven. Geeft de (na verwijdering
-    opgeschoven) positie van de sjabloonrij terug."""
+    retailernaam, als die is meegegeven. Daarna wordt altijd de vaste
+    ***-voetnoot (ACTIE_INKOOPPRIJS_VOETNOOT_TEKST) toegevoegd. Geeft de
+    (na verwijdering/invoegen opgeschoven) positie van de sjabloonrij
+    terug."""
     if sjabloon_rij <= laatste_output_rij + 1:
-        return sjabloon_rij
+        return _voeg_vaste_actieprijs_voetnoot_toe(sheet, laatste_output_rij, sjabloon_rij)
 
     geziene_voetnoten = set()
     te_verwijderen = []
@@ -696,10 +719,13 @@ def _verwijder_overtollige_rijen(sheet, laatste_output_rij: int, sjabloon_rij: i
         sheet.Rows(rij).Delete(Shift=XL_SHIFT_UP)
 
     print(f"{len(te_verwijderen)} oude placeholder-rij(en) verwijderd, "
-          f"{len(geziene_voetnoten)} voetnootregel(s) (*/**/***) behouden "
+          f"{len(geziene_voetnoten)} voetnootregel(s) (*/**) behouden "
           f"(rijen vóór verschuiving: {te_behouden}).")
 
-    return sjabloon_rij - len(te_verwijderen)
+    sjabloon_rij -= len(te_verwijderen)
+    laatste_voetnoot_rij = laatste_output_rij + len(te_behouden)
+
+    return _voeg_vaste_actieprijs_voetnoot_toe(sheet, laatste_voetnoot_rij, sjabloon_rij)
 
 
 def vul_sheet(sheet, retailer_cfg: dict, weken: list, week_groepen: list, tick=None) -> int:
