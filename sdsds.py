@@ -624,6 +624,34 @@ def open_excel_veilig():
     return app, excel_pid
 
 
+def opslaan_met_retry(wb, output_pad: Path, pogingen: int = 5, wachttijd: float = 2.0):
+    """wb.Save() kan transient falen met 'Document not saved' direct na een
+    verse shutil.copy2()-kopie - meest waarschijnlijk omdat OneDrive (als de
+    map gesynchroniseerd is) het bestand heel even vastpakt om te beginnen
+    met syncen, of omdat een eerdere run met dezelfde bestandsnaam nog open
+    staat in een ander Excel-venster. Beide oorzaken zijn meestal binnen een
+    paar seconden vanzelf voorbij, dus we proberen het een paar keer opnieuw
+    in plaats van meteen te crashen."""
+    laatste_fout = None
+    for poging in range(1, pogingen + 1):
+        try:
+            wb.Save()
+            return
+        except Exception as fout:
+            laatste_fout = fout
+            print(f"Opslaan mislukt (poging {poging}/{pogingen}): {fout}")
+            if poging < pogingen:
+                print(f"  Mogelijke oorzaak: het bestand wordt nog even vastgehouden door iets anders "
+                      f"(OneDrive-sync vlak na het kopieren, of een ander geopend Excel-venster met "
+                      f"dezelfde bestandsnaam '{output_pad.name}'). Nieuwe poging over {wachttijd}s...")
+                time.sleep(wachttijd)
+    raise RuntimeError(
+        f"Opslaan van {output_pad} is na {pogingen} pogingen mislukt. Laatste fout: {laatste_fout}. "
+        f"Controleer of dit bestand ergens anders open staat (sluit dat venster), of dat de map nog "
+        f"actief aan het synchroniseren is via OneDrive."
+    ) from laatste_fout
+
+
 def vind_template_sheet(wb, naam):
     if naam:
         for sheet in wb.Sheets:
@@ -981,7 +1009,7 @@ def genereer_voor_retailer(retailer_naam: str, weken_arg, jaar: int, toegestane_
         # als ze nog nooit berekend zijn); de gebruiker kan in Excel zelf
         # F9 (of Ctrl+Alt+F9) drukken om bewust en zichtbaar te verversen,
         # in plaats van dat het script daar onzichtbaar op vastloopt.
-        wb.Save()
+        opslaan_met_retry(wb, output_pad)
 
         for sheet in gemaakte_sheets:
             pdf_naam = f"{output_basis}_{sheet.Name}.pdf".replace(" ", "_")
