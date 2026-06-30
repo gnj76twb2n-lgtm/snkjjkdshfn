@@ -105,7 +105,7 @@ KLEUR_BLAUW = 15257527
 KLEUR_GEEL = 10092543
 
 EXCEL_ZICHTBAAR = False
-EXCEL_WATCHDOG_TIMEOUT = 120   # seconden - harde kill, ongeacht of Excel intern vastzit op een COM-aanroep
+EXCEL_WATCHDOG_STILTE_TIMEOUT = 120   # seconden ZONDER voortgang voordat de watchdog hard ingrijpt
 
 # Excel/COM-constanten (letterlijke waarden, geen gencache/EnsureDispatch nodig)
 XL_PASTE_ALL = -4104
@@ -127,6 +127,7 @@ XL_MEDIUM = -4138
 XL_SOLID = 1
 MSO_AUTOMATION_FORCE_DISABLE = 3
 XL_CALCULATION_AUTOMATIC = -4105
+XL_CALCULATION_MANUAL = -4135
 XL_TYPE_PDF = 0
 XL_OPENXML_WORKBOOK = 51   # normale .xlsx, geen macro's (52 zou macro-enabled zijn)
 XL_QUALITY_STANDARD = 0
@@ -149,25 +150,49 @@ def kill_orphan_excel():
         print(f"Opgeruimd: {gevonden} achtergebleven EXCEL.EXE-proces(sen).")
 
 
-def start_watchdog(excel_pid: int, max_seconden: int):
-    """Doodt het Excel-proces met dit PID met geweld als het na max_seconden nog
-    leeft. Draait in een aparte thread, dus dit werkt ook als de hoofdthread
-    zelf vastzit op een blokkerende COM-aanroep (bv. omdat Excel intern wacht
-    op een externe, onbereikbare koppeling) - een gewone Python time.sleep-
-    check in dezelfde thread kan zo'n bevroren COM-aanroep niet onderbreken."""
-    def _bewaak():
-        time.sleep(max_seconden)
-        try:
-            proc = psutil.Process(excel_pid)
-            if proc.is_running():
-                print(f"WATCHDOG: Excel (PID {excel_pid}) draait nog na {max_seconden}s - hard afgesloten.")
-                proc.kill()
-        except psutil.NoSuchProcess:
-            pass   # was al netjes afgesloten, niets te doen
+class ExcelWatchdog:
+    """Hartslag-watchdog: doodt het Excel-proces alleen als er STILTE_TIMEOUT
+    seconden GEEN voortgang is gemeld via tick(), niet simpelweg na een vaste
+    totale looptijd. Dit voorkomt dat een run die legitiem lang duurt (bv.
+    door een trage externe EAN-koppeling, of gewoon veel rijen) halverwege
+    wordt afgebroken zolang er nog daadwerkelijk iets gebeurt. Draait in een
+    aparte thread, dus dit werkt ook als de hoofdthread zelf vastzit op een
+    blokkerende COM-aanroep - een gewone Python time.sleep-check in dezelfde
+    thread kan zo'n bevroren COM-aanroep niet onderbreken."""
 
-    thread = threading.Thread(target=_bewaak, daemon=True)
-    thread.start()
-    return thread
+    def __init__(self, excel_pid: int, stilte_timeout: int, check_interval: int = 5):
+        self.excel_pid = excel_pid
+        self.stilte_timeout = stilte_timeout
+        self.check_interval = check_interval
+        self.laatste_signaal = time.time()
+        self._stop = False
+        self._thread = threading.Thread(target=self._bewaak, daemon=True)
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    def tick(self):
+        self.laatste_signaal = time.time()
+
+    def stop(self):
+        self._stop = True
+
+    def _bewaak(self):
+        while not self._stop:
+            time.sleep(self.check_interval)
+            if self._stop:
+                return
+            stilte = time.time() - self.laatste_signaal
+            if stilte > self.stilte_timeout:
+                try:
+                    proc = psutil.Process(self.excel_pid)
+                    if proc.is_running():
+                        print(f"WATCHDOG: geen voortgang in {int(stilte)}s (PID {self.excel_pid}) - hard afgesloten.")
+                        proc.kill()
+                except psutil.NoSuchProcess:
+                    pass   # was al netjes afgesloten, niets te doen
+                return
 
 
 # ====================================================================
@@ -747,7 +772,7 @@ def _verwijder_overtollige_rijen(sheet, laatste_output_rij: int):
         sheet.Rows(f"{laatste_output_rij + 1}:{bovengrens}").Delete()
 
 
-def vul_week_sheet(sheet, retailer_cfg: dict, weken: list, regels: list) -> int:
+def vul_week_sheet(sheet, retailer_cfg: dict, weken: list, regels: list, tick=None) -> int:
     # Rijen 1 t/m 6: de opmaak (kleur, randen, merge) staat al goed in de
     # template zelf - elke sheet is een kopie van het echte, correct
     # opgemaakte origineel. ALLEEN de tekstinhoud aanpassen, niet de opmaak
@@ -802,11 +827,15 @@ def vul_week_sheet(sheet, retailer_cfg: dict, weken: list, regels: list) -> int:
                 # alleen bij de allereerste groep van de hele sheet.
                 _schrijf_witte_spacer_rij(sheet, rij, zwarte_bovenrand=(groep_index == 0))
                 rij += 1
+                if tick:
+                    tick()
 
                 template_rij.Copy()
                 sheet.Rows(rij).PasteSpecial(Paste=XL_PASTE_ALL)
                 _schrijf_mechanisme_rij(sheet, rij, mechanisme_tekst)
                 rij += 1
+                if tick:
+                    tick()
 
             for regel in groep_regels:
                 template_rij.Copy()
@@ -818,6 +847,8 @@ def vul_week_sheet(sheet, retailer_cfg: dict, weken: list, regels: list) -> int:
                 )
                 eerste_product_van_week = False
                 rij += 1
+                if tick:
+                    tick()
 
     laatste_rij = rij - 1
     sheet.Application.CutCopyMode = False
@@ -872,17 +903,21 @@ def genereer_voor_retailer(retailer_naam: str, weken_arg, jaar: int, toegestane_
     shutil.copy2(template_path, output_pad)   # master blijft altijd schoon
 
     app, excel_pid = open_excel_veilig()
+    watchdog = None
     if excel_pid:
-        start_watchdog(excel_pid, EXCEL_WATCHDOG_TIMEOUT)
-        print(f"Watchdog actief op Excel-proces PID {excel_pid} (timeout: {EXCEL_WATCHDOG_TIMEOUT}s).")
+        watchdog = ExcelWatchdog(excel_pid, EXCEL_WATCHDOG_STILTE_TIMEOUT).start()
+        print(f"Watchdog actief op Excel-proces PID {excel_pid} "
+              f"(grijpt in na {EXCEL_WATCHDOG_STILTE_TIMEOUT}s ZONDER voortgang).")
     wb = None
     try:
         wb = app.Workbooks.Open(str(output_pad.resolve()), UpdateLinks=0)
-        # Calculation NIET geforceerd naar automatic: dat triggerde direct na
-        # het openen al een recalculatie-poging, mogelijk inclusief de
-        # externe EAN-prijscourant-koppeling - precies de oorzaak van de
-        # eerdere 10-minuten-hang. We laten de berekeningsmodus van het
-        # bestand zelf staan zoals 'ie is opgeslagen.
+        # Calculation EXPLICIET op manual: zonder dit triggert elke losse
+        # EAN-write (kolom D) meteen een herberekening van de afhankelijke
+        # XLOOKUP-formules, inclusief de externe prijscourant-koppeling -
+        # vermenigvuldigd over tientallen rijen is dat de meest waarschijnlijke
+        # oorzaak van de minutenlange traagheid. Met manual schrijven we eerst
+        # alle waarden, en kan de gebruiker zelf bewust F9 drukken in Excel.
+        app.Calculation = XL_CALCULATION_MANUAL
         pristine = vind_template_sheet(wb, cfg["sheet_template"])
 
         if cfg["meerdere_sheets_per_week"]:
@@ -931,11 +966,11 @@ def genereer_voor_retailer(retailer_naam: str, weken_arg, jaar: int, toegestane_
             # Fase 2: nu pas de inhoud vullen.
             gemaakte_sheets = []
             for week, (sheet, regels_week) in week_naar_sheet.items():
-                vul_week_sheet(sheet, cfg, [week], regels_week)
+                vul_week_sheet(sheet, cfg, [week], regels_week, tick=watchdog.tick if watchdog else None)
                 gemaakte_sheets.append(sheet)
                 print(f"Week {week}: {len(regels_week)} regel(s) -> tabblad '{sheet.Name}'")
         else:
-            vul_week_sheet(pristine, cfg, weken, alle_regels)
+            vul_week_sheet(pristine, cfg, weken, alle_regels, tick=watchdog.tick if watchdog else None)
             gemaakte_sheets = [pristine]
             print(f"{len(alle_regels)} regel(s) geschreven naar '{pristine.Name}'.")
 
@@ -964,6 +999,8 @@ def genereer_voor_retailer(retailer_naam: str, weken_arg, jaar: int, toegestane_
         print(f"Klaar: {output_pad}")
 
     finally:
+        if watchdog is not None:
+            watchdog.stop()
         if wb is not None:
             try:
                 wb.Close(SaveChanges=False)
