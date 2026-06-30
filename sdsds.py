@@ -488,19 +488,13 @@ def vind_template_sheet(wb, naam):
     return sheet
 
 
+_ALLE_KOLOMMEN = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J",
+                  "K", "L", "M", "N", "O", "P", "Q", "R"]
+KOLOMMEN_MET_DIKKE_LINKERRAND = ("A", "J")
+
+
 def zet_verticale_lijnen_zonder_horizontaal(sheet, rij: int):
     rng = sheet.Range(f"A{rij}:{PRINT_LAATSTE_KOLOM}{rij}")
-
-    # Bewaar de lijndikte die al op deze rij stond (meegekomen via het
-    # kopiëren van de sjabloonrij) - dezelfde dikte als de artikelrijen.
-    # Die zetten we straks terug, want het zetten van LineStyle hieronder
-    # kan 'm resetten naar Excel's eigen standaarddikte. Voorheen werd hier
-    # altijd hard XL_THIN gezet, ongeacht wat de sjabloonrij gebruikte -
-    # daardoor zagen de gele/witte rijen er dunner uit dan de artikelrijen.
-    try:
-        sjabloon_dikte = rng.Borders(XL_EDGE_LEFT).Weight
-    except Exception:
-        sjabloon_dikte = XL_THIN
 
     try:
         rng.Borders(XL_EDGE_TOP).LineStyle = 0
@@ -508,13 +502,20 @@ def zet_verticale_lijnen_zonder_horizontaal(sheet, rij: int):
         rng.Borders(XL_INSIDE_HORIZONTAL).LineStyle = 0
     except Exception:
         pass
+
+    # Elke kolomgrens los instellen: standaard dun, behalve de linkerrand
+    # van kolom A en kolom J (de scheiding tussen I en J) - die worden dik
+    # (medium). Zo blijven alle overige verticale lijnen dun, zoals
+    # gevraagd, en zijn alleen die twee scheidingslijnen dik.
     try:
-        rng.Borders(XL_EDGE_LEFT).LineStyle = XL_CONTINUOUS
-        rng.Borders(XL_EDGE_LEFT).Weight = sjabloon_dikte
-        rng.Borders(XL_EDGE_RIGHT).LineStyle = XL_CONTINUOUS
-        rng.Borders(XL_EDGE_RIGHT).Weight = sjabloon_dikte
-        rng.Borders(XL_INSIDE_VERTICAL).LineStyle = XL_CONTINUOUS
-        rng.Borders(XL_INSIDE_VERTICAL).Weight = sjabloon_dikte
+        for kolom in _ALLE_KOLOMMEN:
+            linkerrand = sheet.Range(f"{kolom}{rij}").Borders(XL_EDGE_LEFT)
+            linkerrand.LineStyle = XL_CONTINUOUS
+            linkerrand.Weight = XL_MEDIUM if kolom in KOLOMMEN_MET_DIKKE_LINKERRAND else XL_THIN
+
+        rechterrand = sheet.Range(f"{PRINT_LAATSTE_KOLOM}{rij}").Borders(XL_EDGE_RIGHT)
+        rechterrand.LineStyle = XL_CONTINUOUS
+        rechterrand.Weight = XL_THIN
     except Exception:
         pass
 
