@@ -490,6 +490,18 @@ def vind_template_sheet(wb, naam):
 
 def zet_verticale_lijnen_zonder_horizontaal(sheet, rij: int):
     rng = sheet.Range(f"A{rij}:{PRINT_LAATSTE_KOLOM}{rij}")
+
+    # Bewaar de lijndikte die al op deze rij stond (meegekomen via het
+    # kopiëren van de sjabloonrij) - dezelfde dikte als de artikelrijen.
+    # Die zetten we straks terug, want het zetten van LineStyle hieronder
+    # kan 'm resetten naar Excel's eigen standaarddikte. Voorheen werd hier
+    # altijd hard XL_THIN gezet, ongeacht wat de sjabloonrij gebruikte -
+    # daardoor zagen de gele/witte rijen er dunner uit dan de artikelrijen.
+    try:
+        sjabloon_dikte = rng.Borders(XL_EDGE_LEFT).Weight
+    except Exception:
+        sjabloon_dikte = XL_THIN
+
     try:
         rng.Borders(XL_EDGE_TOP).LineStyle = 0
         rng.Borders(XL_EDGE_BOTTOM).LineStyle = 0
@@ -498,11 +510,11 @@ def zet_verticale_lijnen_zonder_horizontaal(sheet, rij: int):
         pass
     try:
         rng.Borders(XL_EDGE_LEFT).LineStyle = XL_CONTINUOUS
-        rng.Borders(XL_EDGE_LEFT).Weight = XL_THIN
+        rng.Borders(XL_EDGE_LEFT).Weight = sjabloon_dikte
         rng.Borders(XL_EDGE_RIGHT).LineStyle = XL_CONTINUOUS
-        rng.Borders(XL_EDGE_RIGHT).Weight = XL_THIN
+        rng.Borders(XL_EDGE_RIGHT).Weight = sjabloon_dikte
         rng.Borders(XL_INSIDE_VERTICAL).LineStyle = XL_CONTINUOUS
-        rng.Borders(XL_INSIDE_VERTICAL).Weight = XL_THIN
+        rng.Borders(XL_INSIDE_VERTICAL).Weight = sjabloon_dikte
     except Exception:
         pass
 
@@ -603,6 +615,7 @@ def _zet_zwarte_onderrand(sheet, rij: int):
 
 
 _IGLO_VOETNOOT_PATROON = re.compile(r"\*{1,3}\s*Iglo", re.IGNORECASE)
+_DIRK_PATROON = re.compile(r"\bDirk\b", re.IGNORECASE)
 
 
 def _rij_tekst(sheet, rij: int) -> str:
@@ -617,22 +630,46 @@ def _rij_tekst(sheet, rij: int) -> str:
 
 
 def _is_iglo_voetnoot(tekst: str) -> bool:
+    # \*{1,3} matcht 1, 2 OF 3 sterretjes - dus *Iglo, **Iglo en ***Iglo
+    # worden hier alle drie door herkend, ongeacht volgorde of wat er
+    # verder nog tussen de voetnootrijen in staat.
     return bool(_IGLO_VOETNOOT_PATROON.search(tekst))
 
 
-def _verwijder_overtollige_rijen(sheet, laatste_output_rij: int, sjabloon_rij: int) -> int:
+def _vervang_dirk_in_rij(sheet, rij: int, retailer_naam: str):
+    """Het sjabloon is origineel voor supermarkt 'Dirk' gemaakt - in de
+    (meestal **) voetnoottekst staat dat woord soms letterlijk. Vervang elk
+    voorkomen van 'Dirk' in deze rij door de echte retailernaam."""
+    rng = sheet.Range(f"A{rij}:{PRINT_LAATSTE_KOLOM}{rij}")
+    waarden = rng.Value
+    if waarden is None:
+        return
+    cellen = list(waarden[0]) if isinstance(waarden, tuple) else [waarden]
+    aangepast = False
+    for i, cel in enumerate(cellen):
+        if isinstance(cel, str) and _DIRK_PATROON.search(cel):
+            cellen[i] = _DIRK_PATROON.sub(retailer_naam, cel)
+            aangepast = True
+    if aangepast:
+        rng.Value = (tuple(cellen),)
+        print(f"  rij {rij}: 'Dirk' vervangen door '{retailer_naam}' in voetnoottekst.")
+
+
+def _verwijder_overtollige_rijen(sheet, laatste_output_rij: int, sjabloon_rij: int, retailer_naam: str = None) -> int:
     """Verwijdert de oude placeholder-rijen tussen het laatst geschreven
     artikel en de sjabloon-/formulerij ECHT (met Delete, niet alleen
     leegmaken zoals voorheen). Een rij die een *Iglo / **Iglo / ***Iglo
     voetnoottekst bevat blijft staan; komt diezelfde voetnoottekst meerdere
     keren voor, dan blijft alleen de eerste keer staan en wordt de rest
-    verwijderd. Geeft de (na verwijdering opgeschoven) positie van de
-    sjabloonrij terug."""
+    verwijderd. In de behouden voetnootrijen wordt 'Dirk' vervangen door de
+    echte retailernaam, als die is meegegeven. Geeft de (na verwijdering
+    opgeschoven) positie van de sjabloonrij terug."""
     if sjabloon_rij <= laatste_output_rij + 1:
         return sjabloon_rij
 
     geziene_voetnoten = set()
     te_verwijderen = []
+    te_behouden = []
 
     for rij in range(laatste_output_rij + 1, sjabloon_rij):
         tekst = _rij_tekst(sheet, rij)
@@ -642,8 +679,13 @@ def _verwijder_overtollige_rijen(sheet, laatste_output_rij: int, sjabloon_rij: i
                 te_verwijderen.append(rij)  # duplicaat van een voetnoot -> ook weg
             else:
                 geziene_voetnoten.add(sleutel)  # eerste keer -> deze rij laten staan
+                te_behouden.append(rij)
         else:
             te_verwijderen.append(rij)
+
+    if retailer_naam:
+        for rij in te_behouden:
+            _vervang_dirk_in_rij(sheet, rij, retailer_naam)
 
     # Van onder naar boven verwijderen - anders schuiven de rijnummers van
     # de nog te verwijderen rijen mee op tijdens het verwijderen.
@@ -651,7 +693,8 @@ def _verwijder_overtollige_rijen(sheet, laatste_output_rij: int, sjabloon_rij: i
         sheet.Rows(rij).Delete(Shift=XL_SHIFT_UP)
 
     print(f"{len(te_verwijderen)} oude placeholder-rij(en) verwijderd, "
-          f"{len(geziene_voetnoten)} *Iglo-voetnoot(en) behouden.")
+          f"{len(geziene_voetnoten)} *Iglo-voetnoot(en) behouden "
+          f"(rijen vóór verschuiving: {te_behouden}).")
 
     return sjabloon_rij - len(te_verwijderen)
 
@@ -731,7 +774,9 @@ def vul_sheet(sheet, retailer_cfg: dict, weken: list, week_groepen: list, tick=N
 
     if laatste_rij >= START_OUTPUT_RIJ:
         _zet_zwarte_onderrand(sheet, laatste_rij)
-        nieuwe_sjabloon_rij = _verwijder_overtollige_rijen(sheet, laatste_rij, huidige_template_rij)
+        nieuwe_sjabloon_rij = _verwijder_overtollige_rijen(
+            sheet, laatste_rij, huidige_template_rij, retailer_naam=retailer_cfg["weergave_naam"]
+        )
         # De behouden *Iglo-voetnootregels staan nu direct onder de
         # laatste artikelregel en horen bij de afdruk - neem ze mee in
         # laatste_rij zodat het printbereik ze ook bevat.
