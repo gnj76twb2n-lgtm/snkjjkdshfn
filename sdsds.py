@@ -50,6 +50,7 @@ FOCUS_KOLOMMEN = {
     "week": "A", "kolom_c": "C",
     "mech_d": "D", "mech_e": "E",
     "sap_code": "F", "ean": "G", "artikelnaam": "H",
+    "kolom_l_bron": "O",
     "volume": "W",
 }
 
@@ -74,6 +75,8 @@ KOL_B_WEEK = "B"
 KOL_C_ADVIES_AFBEELDING = "C"
 KOL_D_EAN = "D"
 KOL_E_PRODUCT = "E"
+KOL_I = "I"   # vast leeg/0, geen formule
+KOL_L = "L"   # gevuld vanuit Promo Focus kolom O
 KOL_J_ACTIE_INKOOPPRIJS = "J"   # alleen nog gebruikt voor de blauwe styling op spacer/mechanisme-rijen
 KOL_P_MECHANISME = "P"
 KOL_Q_VOLUME = "Q"
@@ -87,7 +90,7 @@ ADVIES_AFBEELDING_AANTAL = 2   # top-N op prognose-volume per week
 # Kolommen die na het kopieren van TEMPLATE_FORMULE_RIJ een EAN-gedreven
 # (X)LOOKUP-formule moeten bevatten. Wordt 1x per sheet gecontroleerd, puur
 # als waarschuwing.
-EAN_FORMULE_KOLOMMEN = ["F", "G", "H", "I", "J", "K", "L", "M", "R"]
+EAN_FORMULE_KOLOMMEN = ["F", "G", "H", "J", "K", "M", "R"]   # I en L NIET hier: I is vast leeg/0, L komt uit Promo Focus kolom O
 
 KLEUR_BLAUW = 15257527
 KLEUR_GEEL = 10092543
@@ -378,6 +381,7 @@ def laad_focus_data(pad: Path) -> pd.DataFrame:
         "sap_code_raw": raw.iloc[:, idx["sap_code"]].apply(clean_text),
         "ean": raw.iloc[:, idx["ean"]].apply(clean_ean),
         "artikelnaam": raw.iloc[:, idx["artikelnaam"]].apply(clean_text),
+        "kolom_l_waarde": raw.iloc[:, idx["kolom_l_bron"]].apply(clean_text),
         "volume_raw": raw.iloc[:, idx["volume"]].apply(clean_text),
     })
 
@@ -469,6 +473,7 @@ def bouw_outputregels(focus: pd.DataFrame) -> list:
             "mechanisme_kort": "",
             "volume_excel": volume_to_excel_value(rij["volume_raw"]),
             "volume_sorteerwaarde": volume_as_float(rij["volume_raw"]),
+            "kolom_l_waarde": rij["kolom_l_waarde"],
         })
 
     regels.extend(buffer)   # sectie(s) zonder afsluitende marker: toch meenemen
@@ -664,8 +669,10 @@ def _schrijf_productrij(sheet, rij: int, regel: dict, eerste_rij_van_sheet: bool
         ean_cel.Value = ean_waarde
 
     sheet.Range(f"{KOL_E_PRODUCT}{rij}").Value = regel["productnaam"]
-    # Kolommen F/G/H/I/J/K/L/M/R NIET aanraken: allemaal EAN-formule-
-    # gedreven in de template, gevoed door de EAN die hierboven in D staat.
+    # Kolommen F/G/H/J/K/M/R NIET aanraken: EAN-formule-gedreven in de
+    # template, gevoed door de EAN die hierboven in D staat.
+    sheet.Range(f"{KOL_I}{rij}").Value = 0   # vast leeg/0, geen formule meer
+    sheet.Range(f"{KOL_L}{rij}").Value = regel["kolom_l_waarde"]   # rechtstreeks uit Promo Focus kolom O
     sheet.Range(f"{KOL_P_MECHANISME}{rij}").Value = regel["mechanisme_kort"]
     sheet.Range(f"{KOL_Q_VOLUME}{rij}").Value = regel["volume_excel"]
 
