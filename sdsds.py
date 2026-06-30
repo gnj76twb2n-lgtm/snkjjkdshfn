@@ -5,6 +5,7 @@ import html
 import re
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -96,6 +97,7 @@ KLEUR_BLAUW = 15257527
 KLEUR_GEEL = 10092543
 
 EXCEL_ZICHTBAAR = False
+EXCEL_WATCHDOG_TIMEOUT = 120   # seconden - harde kill, ongeacht of Excel intern vastzit op een COM-aanroep
 
 # Excel/COM-constanten (letterlijke waarden, geen gencache/EnsureDispatch nodig)
 XL_PASTE_ALL = -4104
@@ -137,6 +139,27 @@ def kill_orphan_excel():
                 pass
     if gevonden:
         print(f"Opgeruimd: {gevonden} achtergebleven EXCEL.EXE-proces(sen).")
+
+
+def start_watchdog(excel_pid: int, max_seconden: int):
+    """Doodt het Excel-proces met dit PID met geweld als het na max_seconden nog
+    leeft. Draait in een aparte thread, dus dit werkt ook als de hoofdthread
+    zelf vastzit op een blokkerende COM-aanroep (bv. omdat Excel intern wacht
+    op een externe, onbereikbare koppeling) - een gewone Python time.sleep-
+    check in dezelfde thread kan zo'n bevroren COM-aanroep niet onderbreken."""
+    def _bewaak():
+        time.sleep(max_seconden)
+        try:
+            proc = psutil.Process(excel_pid)
+            if proc.is_running():
+                print(f"WATCHDOG: Excel (PID {excel_pid}) draait nog na {max_seconden}s - hard afgesloten.")
+                proc.kill()
+        except psutil.NoSuchProcess:
+            pass   # was al netjes afgesloten, niets te doen
+
+    thread = threading.Thread(target=_bewaak, daemon=True)
+    thread.start()
+    return thread
 
 
 # ====================================================================
@@ -530,12 +553,20 @@ def schrijf_controlebestand(regels: list, output_dir: Path, retailer: str) -> Pa
 # ====================================================================
 
 def open_excel_veilig():
+    pids_voor = {p.pid for p in psutil.process_iter(["pid", "name"]) if p.info["name"] == "EXCEL.EXE"}
     app = win32.DispatchEx("Excel.Application")
     app.Visible = EXCEL_ZICHTBAAR
     app.DisplayAlerts = False
     app.AskToUpdateLinks = False
     app.AutomationSecurity = MSO_AUTOMATION_FORCE_DISABLE   # Workbook_Open vuurt nooit af
-    return app
+
+    pids_na = {p.pid for p in psutil.process_iter(["pid", "name"]) if p.info["name"] == "EXCEL.EXE"}
+    nieuwe_pids = pids_na - pids_voor
+    excel_pid = nieuwe_pids.pop() if len(nieuwe_pids) == 1 else None
+    if excel_pid is None:
+        print(f"WAARSCHUWING: kon het PID van het nieuwe Excel-proces niet eenduidig vinden "
+              f"({len(nieuwe_pids)} kandidaten) - watchdog kan dit proces dan niet specifiek targeten.")
+    return app, excel_pid
 
 
 def vind_template_sheet(wb, naam):
@@ -550,17 +581,6 @@ def vind_template_sheet(wb, naam):
     sheet.Visible = XL_SHEET_VISIBLE
     return sheet
 
-
-def wacht_op_excel_berekening(app, max_seconden=90):
-    try:
-        start = time.time()
-        while app.CalculationState != 0:
-            if time.time() - start > max_seconden:
-                print("Waarschuwing: Excel blijft lang berekenen, script gaat verder.")
-                break
-            time.sleep(1)
-    except Exception:
-        pass
 
 
 def zet_verticale_lijnen_zonder_horizontaal(sheet, rij: int):
@@ -805,11 +825,18 @@ def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_k
     output_pad = OUTPUT_MAP / f"{output_basis}.xlsx"
     shutil.copy2(template_path, output_pad)   # master blijft altijd schoon
 
-    app = open_excel_veilig()
+    app, excel_pid = open_excel_veilig()
+    if excel_pid:
+        start_watchdog(excel_pid, EXCEL_WATCHDOG_TIMEOUT)
+        print(f"Watchdog actief op Excel-proces PID {excel_pid} (timeout: {EXCEL_WATCHDOG_TIMEOUT}s).")
     wb = None
     try:
         wb = app.Workbooks.Open(str(output_pad.resolve()), UpdateLinks=0)
-        app.Calculation = XL_CALCULATION_AUTOMATIC
+        # Calculation NIET geforceerd naar automatic: dat triggerde direct na
+        # het openen al een recalculatie-poging, mogelijk inclusief de
+        # externe EAN-prijscourant-koppeling - precies de oorzaak van de
+        # eerdere 10-minuten-hang. We laten de berekeningsmodus van het
+        # bestand zelf staan zoals 'ie is opgeslagen.
         pristine = vind_template_sheet(wb, cfg["sheet_template"])
 
         if cfg["meerdere_sheets_per_week"]:
@@ -866,8 +893,13 @@ def genereer_voor_retailer(retailer_key: str, weken_arg, jaar: int, toegestane_k
             gemaakte_sheets = [pristine]
             print(f"{len(alle_regels)} regel(s) geschreven naar '{pristine.Name}'.")
 
-        app.CalculateFullRebuild()
-        wacht_op_excel_berekening(app)
+        # GEEN geforceerde CalculateFullRebuild() meer: dat dwong een volledige
+        # herberekening af, inclusief de externe EAN-XLOOKUP-koppeling naar de
+        # prijscourant - en dat veroorzaakte de 10-minuten-hang. De formules
+        # blijven nu staan met hun laatst-bekende/gecachede waarde (of leeg,
+        # als ze nog nooit berekend zijn); de gebruiker kan in Excel zelf
+        # F9 (of Ctrl+Alt+F9) drukken om bewust en zichtbaar te verversen,
+        # in plaats van dat het script daar onzichtbaar op vastloopt.
         wb.Save()
 
         for sheet in gemaakte_sheets:
